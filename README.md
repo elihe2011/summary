@@ -3,6 +3,7 @@
 ## 1. 数据结构和算法
 
 - [链表](https://github.com/elihe2011/summary/blob/master/data-structure/LinkedList.md)
+- [栈和队列](https://github.com/elihe2011/summary/blob/master/data-structure/Stack.md)
 - [二叉树](https://github.com/elihe2011/summary/blob/master/data-structure/Tree.md)
 
 

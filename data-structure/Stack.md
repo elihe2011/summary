@@ -165,6 +165,140 @@ func isValid(s string) bool {
 
 *逆波兰*表示法（Reverse Polish notation，RPN，或*逆波兰*记法）
 
+```
+func main() {
+	s := "(1+(4+5*2)-3)+(6+8/2)"
+	e := reversePolish(s)
+	fmt.Println(e)
+
+	ans := evalRPN(e)
+	fmt.Println(ans)
+}
+
+type stack []interface{}
+
+func (s *stack) isEmpty() bool {
+	return len(*s) == 0
+}
+
+func (s *stack) push(v interface{}) {
+	*s = append(*s, v)
+}
+
+func (s *stack) pop() interface{} {
+	if s.isEmpty() {
+		panic("empty")
+	}
+
+	v := (*s)[len(*s)-1]
+	*s = (*s)[:len(*s)-1]
+	return v
+}
+
+func (s *stack) peek() interface{} {
+	if s.isEmpty() {
+		panic("empty")
+	}
+
+	v := (*s)[len(*s)-1]
+	return v
+}
+
+func reversePolish(s string) []string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "-") {
+		s = "0" + s
+	}
+
+	ops := new(stack)
+	var tokens []string
+
+	for i := 0; i < len(s); i++ {
+		if isDigit(s[i]) {
+			num := 0
+			for i < len(s) && isDigit(s[i]) {
+				num = num*10 + int(s[i]-'0')
+				i++
+			}
+			i--
+			tokens = append(tokens, strconv.Itoa(num))
+		} else if isOperator(s[i]) {
+			// 操作符优先级选择
+			for !ops.isEmpty() && priority(ops.peek().(byte)) >= priority(s[i]) {
+				op := ops.pop().(byte)
+				tokens = append(tokens, string([]byte{op}))
+			}
+			ops.push(s[i])
+		} else if s[i] == '(' {
+			ops.push(s[i])
+		} else if s[i] == ')' {
+			// 括号中的操作符出栈
+			for !ops.isEmpty() && ops.peek().(byte) != '(' {
+				op := ops.pop().(byte)
+				tokens = append(tokens, string([]byte{op}))
+			}
+			ops.pop() // '(' 出栈
+		}
+	}
+
+	// 剩余操作符
+	for !ops.isEmpty() {
+		op := ops.pop().(byte)
+		tokens = append(tokens, string([]byte{op}))
+	}
+
+	return tokens
+}
+
+func isDigit(c byte) bool {
+	return c >= '0' && c <= '9'
+}
+
+func isOperator(c byte) bool {
+	switch c {
+	case '+', '-', '*', '/':
+		return true
+	}
+	return false
+}
+
+func priority(c byte) int {
+	switch c {
+	case '+', '-':
+		return 1
+	case '*', '/':
+		return 2
+	}
+	return 0
+}
+
+func evalRPN(tokens []string) int {
+	nums := new(stack)
+
+	for _, v := range tokens {
+		switch v {
+		case "+":
+			a, b := nums.pop().(int), nums.pop().(int)
+			nums.push(b + a)
+		case "-":
+			a, b := nums.pop().(int), nums.pop().(int)
+			nums.push(b - a)
+		case "*":
+			a, b := nums.pop().(int), nums.pop().(int)
+			nums.push(b * a)
+		case "/":
+			a, b := nums.pop().(int), nums.pop().(int)
+			nums.push(b / a)
+		default:
+			num, _ := strconv.Atoi(v)
+			nums.push(num)
+		}
+	}
+
+	return nums.pop().(int)
+}
+```
+
 
 
 
