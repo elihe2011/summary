@@ -430,22 +430,27 @@ func isPalindrome(head *ListNode) bool {
 
 ```go
 func detectCycle(head *ListNode) *ListNode {
-	slow, fast := head, head
-	for fast != nil && fast.Next != nil {
-		slow = slow.Next
-		fast = fast.Next.Next
+    slow, fast := head, head
 
-        // 找到入环点
-		if fast != nil && fast == slow {
-			fast = head
-			for fast != slow {
-				fast = fast.Next
-				slow = slow.Next
-			}
-			return fast
-		}
-	}
-	return nil
+    for fast != nil && fast.Next != nil {
+        slow = slow.Next
+        fast = fast.Next.Next
+        if slow == fast {
+            break
+        }
+    }
+
+    if fast == nil || fast.Next == nil {
+        return nil
+    }
+
+    slow = head
+    for slow != fast {
+        slow = slow.Next
+        fast = fast.Next
+    }
+
+    return slow
 }
 ```
 
