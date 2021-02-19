@@ -1062,7 +1062,7 @@ go get -v github.com/olivere/elastic/v7
 
 
 
-# xx. `GO111MODULE` 
+# 17. `GO111MODULE` 
 
 - `GO111MODULE = auto` 默认模式，此种模式下，Go 会表现
 
@@ -1071,4 +1071,49 @@ go get -v github.com/olivere/elastic/v7
 - `GO111MODULE = on`, 即使在`GOPATH`内部，任然强制使用`go.mod`
 - `GO111MODULE = off` 强制使用`GOPATH` 方式，即使在 `GOPATH` 之外。
 
+# 18. 包管理 （go mod)
+
+```
+go mod edit -replace google.golang.org/grpc@v1.35.0=google.golang.org/grpc@v1.26.0
+go mod tidy
+
+go list -m all
+go list -m -u all    // 可升级的
+
+go clean -modcache  清除所有mod缓存
+```
+
+
+
+# 19. channel
+
+## 19.1 对关闭的channel进行读写操作
+
+- Read
+  - buffer中有数据，能够读到数据，且`ok-idom`等于 true
+  - buffer中无数据，读到的数据为channel类型的默认值，且`ok-idom`为 false
+- Write： panic
+
+
+
+# 20. nil == nil
+
+注意点：
+
+- 当 nil (硬编码的值)与对象比较时，nil 的类型和与它比较的对象声明的类型相同
+- c 的类型是 interface{}，它的默认值是 nil
+
+```go
+func main() {
+	var a *string = nil     // <*string, nil>
+	var b interface{} = nil // <nil, nil>
+	var c interface{} = a   // <*string, nil>
+
+	fmt.Println(a == nil) // true (<*string, nil> == <*string, nil>)
+	fmt.Println(b == nil) // true (<nil, nil> == <nil, nil>)
+	fmt.Println(c == nil) // false (<*string, nil> == <nil, nil>)
+	fmt.Println(a == b)   // false (<*string, nil> == <nil, nil>)
+	fmt.Println(a == c)   // true (<*string, nil> == <*string, nil>)
+}
+```
 
