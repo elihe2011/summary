@@ -1,0 +1,46 @@
+# 1. 安装服务
+
+```go
+docker pull docker.elastic.co/elasticsearch/elasticsearch:7.10.2
+docker run --name es -p 9200:9200 -p 9300:9300 -e "discovery.type=single-node" -d docker.elastic.co/elasticsearch/elasticsearch:7.10.2
+```
+
+
+
+# 2. 实例
+
+```bash
+go get -v github.com/olivere/elastic/v7
+```
+
+
+
+```go
+type User struct {
+	Name    string
+	Age     byte
+	Address string
+}
+
+func main() {
+	cli, err := elastic.NewClient(elastic.SetSniff(false), elastic.SetURL("http://192.168.31.200:9200/"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("connected to elastic-search server.")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	user := User{Name: "jack", Age: 21, Address: "LA, US"}
+	_, err = cli.Index().
+		Index("users").
+		Id("1").
+		BodyJson(user).Do(ctx)
+	cancel()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("Done")
+}
+```
+

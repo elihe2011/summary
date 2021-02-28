@@ -524,6 +524,18 @@ Hystrix
 | 优点 | 性能高                           | 简单                       | 简单                               |
 | 缺点 | 生成的字符串复杂，很多场景不适用 | 依赖DB的性能和重复发号问题 | 依赖系统时间，时间回拨，可造成重复 |
 
+Tweet Snowflake: https://github.com/twitter/snowflake
+
+```
++--------------------------------------------------------------------------+
+| 1 Bit Unused | 41 Bit Timestamp |  10 Bit NodeID  |   12 Bit Sequence ID |
++--------------------------------------------------------------------------+
+```
+
+- 41 Bit Timestamp: 当前时间戳(ms)
+
+变种：https://github.com/sony/sonyflake
+
 
 
 # 11. 分布式式锁实现
