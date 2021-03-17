@@ -1092,3 +1092,128 @@ func reverse(arr []int, i, j int) {
 }
 ```
 
+
+
+# 9. [接雨水](https://leetcode-cn.com/problems/trapping-rain-water/)
+
+给定 n 个非负整数表示每个宽度为 1 的柱子的高度图，计算按此排列的柱子，下雨之后能接多少雨水。
+
+![a](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/algorithm/rain_water_trap_1.png)
+
+```
+输入：height = [0,1,0,2,1,0,1,3,2,1,2,1]
+输出：6
+解释：上面是由数组 [0,1,0,2,1,0,1,3,2,1,2,1] 表示的高度图，在这种情况下，可以接 6 个单位的雨水（蓝色部分表示雨水）。
+```
+
+解题思路：
+
+1. 寻找位置 i 左右的最高位置
+2. 位置 i 能够装水 `water[i] = min( max(0,i-1), max(i+1,n-1) ) - height[i]`
+
+![a](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/algorithm/rain_water_trap_2.png)
+
+**1. 暴力解法：**
+
+```go
+func trap(height []int) int {
+	n := len(height)
+	if n <= 2 {
+		return 0
+	}
+
+	var res int
+
+	for i := 1; i < n-1; i++ {
+		var lMax, rMax int
+
+		// 左边最高处
+		for j := i; j >= 0; j-- {
+			lMax = max(lMax, height[j])
+		}
+
+		// 右边最高处
+		for j := i; j < n; j++ {
+			rMax = max(rMax, height[j])
+		}
+
+		res += min(lMax, rMax) - height[i]
+	}
+
+	return res
+}
+```
+
+
+
+**2. 使用 memo 数组优化：**
+
+先获取每一个位置的左右最高位置，避免重复查找
+
+```go
+func trapV2(height []int) int {
+	n := len(height)
+	if n <= 2 {
+		return 0
+	}
+
+	// 备忘数组
+	var lMaxArr = make([]int, n)
+	var rMaxArr = make([]int, n)
+
+	lMaxArr[0] = height[0]
+	rMaxArr[n-1] = height[n-1]
+
+	for i := 1; i < n; i++ {
+		lMaxArr[i] = max(height[i], lMaxArr[i-1])
+	}
+
+	for i := n - 2; i >= 0; i-- {
+		rMaxArr[i] = max(height[i], rMaxArr[i+1])
+	}
+
+	var res int
+	for i := 1; i < n-1; i++ {
+		res += min(lMaxArr[i], rMaxArr[i]) - height[i]
+	}
+
+	return res
+}
+```
+
+
+
+**3. 双指针法：**
+
+使用双指针边走边计算，节约内存空间
+
+![a](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/algorithm/rain_water_trap_3.png)
+
+```go
+func trapV3(height []int) int {
+	n := len(height)
+	if n <= 2 {
+		return 0
+	}
+
+	var res int
+	left, right := 0, n-1
+	lMax, rMax := height[0], height[n-1]
+
+	for left < right {
+		lMax = max(lMax, height[left])
+		rMax = max(rMax, height[right])
+
+		if lMax < rMax {
+			res += lMax - height[left]
+			left++
+		} else {
+			res += rMax - height[right]
+			right--
+		}
+	}
+
+	return res
+}
+```
+
