@@ -37,7 +37,7 @@
 
 ## 3.3 映射数据
 
-将 objectA, objectB, objectC, objectD 四个对象通过特定的 hash 函数计算出对应的 key 值，然后散列到 hash 环上，沿环顺时针“行走”，第一个遇到的服务器就是其应该定位到的服务器。
+将 Object A, B, C, D 四个对象通过特定的 hash 函数计算出对应的 key 值，然后散列到 hash 环上，**沿环顺时针“行走”，第一个遇到的服务器就是其应该定位到的服务器**。
 
 ![a](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/microservice/consistency-hash-mapping-data.jpg)
 
@@ -45,9 +45,9 @@
 
 ## 3.4 服务器删除和添加
 
-- Node C 宕机，Object A, B，D 不会受影响，只有 Object C会重新分配到Node D上
+- Node C 宕机，Object A, B, D 不会受影响，只有 Object C会重新分配到Node D上
 - 新增Node X，通过hash算法映射到环中，通过按照顺时针迁移规则，Object C 被迁移到了Node X 中，其他对象保持原有存储位置不变。
-- 一致性哈希算法，保持了单调性同时，还保证了数据迁移达到最小。
+- **一致性哈希算法，保持了单调性同时，还保证了数据迁移达到最小。**
 
 ![a](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/microservice/consistency-hash-node-mantenance.jpg)
 
