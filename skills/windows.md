@@ -14,3 +14,18 @@ for /f "delims=" %%f in ('dir  /b/a-d/s  %ROOT%\*.cnt') do (
 pause
 ```
 
+
+
+# 2. C盘数据搬迁
+
+先将Chrome下的数据剪切到D盘，然后建立软连接
+
+```bash
+echo off
+mklink /d "C:\Users\Administrator\AppData\Local\Google\Chrome\User Data" "D:\Program Files\Chrome\User Data"
+mklink /d "C:\Users\Administrator\AppData\Local\Google\Chrome\Application" "D:\Program Files\Chrome\Application"
+explorer "C:\Users\Administrator\AppData\Local\Google\Chrome"
+echo The 'Administrator' in this file needs to be modified for the current user
+pause
+```
+
