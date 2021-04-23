@@ -29,3 +29,19 @@ echo The 'Administrator' in this file needs to be modified for the current user
 pause
 ```
 
+
+
+# 3. 网络刷新
+
+```bash
+# 释放现有IP
+ipconfig /release
+ipconfig /release *Adapter*   # Vmware
+
+# 向DHCP服务器发IP租用请求
+ipconfig /renew
+
+# 清除 dns 缓存
+ipconfig /flushdns
+```
+
