@@ -70,11 +70,55 @@ func MySqrt(x int) int {
 
 # 2. 二分查找左边界
 
-特点：
+三种情况：
 
-- 数组有序，但包含重复元素
+1. 数组有序，但包含重复元素  [278. 第一个错误的版本](https://leetcode-cn.com/problems/first-bad-version/) 
 
-- 数组部分有序，且不包含重复元素
+2. 数组部分有序，且不包含重复元素 [153. 寻找旋转排序数组中的最小值](https://leetcode-cn.com/problems/find-minimum-in-rotated-sorted-array/)
 
-- 数组部分有序，且包含重复元素
+3. 数组部分有序，且包含重复元素
+
+```go
+// 适合 1 & 2
+func BinarySearchLeftBoundary1(nums []int, target int) int {
+	left, right := 0, len(nums)-1
+
+	for left < right {
+		mid := left + (right-left)/2
+		if nums[mid] < target {
+			left = mid + 1
+		} else {
+			right = mid // 找到目标值后，继续向左寻找左边界
+		}
+	}
+
+	if nums[left] == target {
+		return left
+	}
+
+	return -1
+}
+
+// 适合 3
+func BinarySearchLeftBoundary2(nums []int, target int) int {
+	left, right := 0, len(nums)-1
+
+	for left < right {
+		mid := left + (right-left)/2
+		if nums[mid] < target {
+			left = mid + 1
+		} else if nums[mid] > target {
+			right = mid // 找到目标值后，继续向左寻找左边界
+		} else {
+			right-- // 更保守的右边值收缩，防止跳过目标边界导致遗漏
+		}
+	}
+
+	if nums[left] == target {
+		return left
+	}
+
+	return -1
+}
+```
 
