@@ -199,3 +199,13 @@ docker run -it --rm user/debug /bin/sh
 docker run --rm --entrypoint="" grafana/grafana:latest /bin/sh -c 'cat /etc/passwd | grep grafana'
 ```
 
+
+
+# 9. 获取宿主机root权限
+
+```bash
+docker run --privileged=true  
+
+docker run -d --name zookeeper --publish 2181:2181 zookeeper
+```
+
