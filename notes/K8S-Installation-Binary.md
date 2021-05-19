@@ -840,7 +840,7 @@ systemctl status kube-scheduler
 
 
 
-## 4.5 查看集群状态
+## 4.5 集群状态
 
 ```bash
 kubectl get cs
@@ -852,6 +852,89 @@ etcd-2               Healthy   {"health":"true"}
 etcd-1               Healthy   {"health":"true"}
 etcd-0               Healthy   {"health":"true"}
 ```
+
+
+
+## 4.6 集群配置 (admin管理)
+
+```bash
+# 1. 生成kubectl连接集群的证书
+cd ~/TLS/k8s
+cat > admin-csr.json <<EOF
+{
+  "CN": "admin",
+  "hosts": [],
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "CN",
+      "L": "Nanjing",
+      "ST": "Jiangsu",
+      "O": "system:masters",
+      "OU": "System"
+    }
+  ]
+}
+EOF
+
+# 生成证书
+cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes admin-csr.json | cfssljson -bare admin
+
+# 2. 生成kubeconfig文件
+mkdir -p /root/.kube
+
+KUBE_CONFIG=/root/.kube/config
+KUBE_APISERVER="https://192.168.80.11:6443"
+
+kubectl config set-cluster kubernetes \
+  --certificate-authority=/opt/kubernetes/ssl/ca.pem \
+  --embed-certs=true \
+  --server=${KUBE_APISERVER} \
+  --kubeconfig=${KUBE_CONFIG}
+kubectl config set-credentials cluster-admin \
+  --client-certificate=./admin.pem \
+  --client-key=./admin-key.pem \
+  --embed-certs=true \
+  --kubeconfig=${KUBE_CONFIG}
+kubectl config set-context default \
+  --cluster=kubernetes \
+  --user=cluster-admin \
+  --kubeconfig=${KUBE_CONFIG}
+kubectl config use-context default --kubeconfig=${KUBE_CONFIG}
+
+# 3. 查询配置信息
+kubectl config view
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: DATA+OMITTED
+    server: https://192.168.80.11:6443
+  name: kubernetes
+contexts:
+- context:
+    cluster: kubernetes
+    user: cluster-admin
+  name: default
+current-context: default
+kind: Config
+preferences: {}
+users:
+- name: cluster-admin
+  user:
+    client-certificate-data: REDACTED
+    client-key-data: REDACTED
+
+kubectl config get-contexts
+CURRENT   NAME      CLUSTER      AUTHINFO        NAMESPACE
+*         default   kubernetes   cluster-admin
+```
+
+
+
+
 
 
 
@@ -1373,7 +1456,7 @@ k8s-node2     Ready    node     13m    v1.19.11   beta.kubernetes.io/arch=amd64,
 
 
 
-# 9. Dashboard
+# 8. Dashboard
 
 ```bash
 cd ~/ymal
@@ -1428,7 +1511,7 @@ https://192.168.80.11:30564
 
 
 
-# 8. CoreDNS
+# 9. CoreDNS
 
 CoreDNS用于集群内部Service名称解析
 
@@ -1524,6 +1607,363 @@ metadata:
   selfLink: /api/v1/namespaces/kube-system/configmaps/coredns
   uid: c62a856d-1fc3-4fe9-b5f1-3ca0dbeb39c1
 ```
+
+
+
+# 10. Master-Node 扩容
+
+## 10.1 克隆
+
+```bash
+# k8s-master1 上执行
+tar zcvf master-node-clone.tar.gz /opt/kubernetes /opt/etcd/ssl /usr/lib/systemd/system/kube* /root/.kube /root/.bash_profile /opt/cni/bin
+scp master-node-clone.tar.gz root@192.168.80.12:/
+
+# k8s-master2 执行
+cd / && tar zxvf master-node-clone.tar.gz && rm -f master-node-clone.tar.gz
+ln -s /opt/kubernetes/bin/kubectl /usr/bin/kubectl
+
+rm -f /opt/kubernetes/logs/*
+rm -f /opt/kubernetes/cfg/kubelet.kubeconfig 
+rm -f /opt/kubernetes/ssl/kubelet*
+
+source /root/.bash_profile
+```
+
+
+
+## 10.2 修改配置文件
+
+```bash
+vi /opt/kubernetes/cfg/kube-apiserver.conf 
+--bind-address=192.168.80.12 \
+--advertise-address=192.168.80.12 \
+
+vi /opt/kubernetes/cfg/kubelet.conf
+--hostname-override=k8s-master2
+
+vi /opt/kubernetes/cfg/kube-proxy-config.yml
+hostnameOverride: k8s-master2
+```
+
+
+
+## 10.3 开机启动
+
+```bash
+systemctl daemon-reload
+systemctl start kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy
+systemctl enable kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy
+```
+
+
+
+## 10.4 集群状态
+
+```bash
+vi /root/.kube/config
+server: https://192.168.80.12:6443
+
+kubectl get cs
+Warning: v1 ComponentStatus is deprecated in v1.19+
+NAME                 STATUS    MESSAGE             ERROR
+controller-manager   Healthy   ok
+scheduler            Healthy   ok
+etcd-2               Healthy   {"health":"true"}
+etcd-1               Healthy   {"health":"true"}
+etcd-0               Healthy   {"health":"true"}
+```
+
+
+
+## 10.5 批准 kubelet 证书申请
+
+```bash
+kubectl get csr
+NAME                                                   AGE     SIGNERNAME                                    REQUESTOR           CONDITION
+node-csr-_rO1et9aMBGp1a12oZpTSwEtoHFQa4-n8IGh0zfJuq4   4m28s   kubernetes.io/kube-apiserver-client-kubelet   kubelet-bootstrap   Pending
+
+# 批准加入
+kubectl certificate approve node-csr-_rO1et9aMBGp1a12oZpTSwEtoHFQa4-n8IGh0zfJuq4
+
+kubectl get node
+NAME          STATUS   ROLES    AGE     VERSION
+k8s-master1   Ready    master   24h     v1.19.11
+k8s-master2   Ready    <none>   3m11s   v1.19.11
+k8s-node1     Ready    node     23h     v1.19.11
+k8s-node2     Ready    node     23h     v1.19.11
+```
+
+
+
+## 10.6 打标和污点
+
+```bash
+# 设置标签
+kubectl label node k8s-master2 node-role.kubernetes.io/master=
+
+# 设置污点：是master节点无法创建pod
+kubectl taint nodes k8s-master1 node-role.kubernetes.io/master=:NoSchedule
+
+# 节点信息
+kubectl get nodes --show-labels
+```
+
+
+
+# 11. 高可用负载均衡
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-apiserver-keepalived.png) 
+
+`Nginx`: 主流Web服务和反向代理服务器，这里用四层实现对apiserver实现负载均衡。
+
+`Keepalived`: 主流高可用软件，基于VIP绑定实现服务器双机热备。Keepalived主要根据Nginx运行状态判断是否需要故障转移（漂移VIP），例如当Nginx主节点挂掉，VIP会自动绑定在Nginx备节点，从而保证VIP一直可用，实现Nginx高可用。
+
+
+
+服务器规划：
+
+| **角色**          | **IP**        | 组件              |
+| ----------------- | ------------- | ----------------- |
+| k8s-master1       | 192.168.80.11 | kube-apiserver    |
+| k8s-master2       | 192.168.80.12 | kube-apiserver    |
+| k8s-loadbalancer1 | 192.168.80.13 | nginx, keepalived |
+| k8s-loadbalancer2 | 192.168.80.14 | nginx, keepalived |
+| VIP               | 192.168.80.10 | 虚拟IP            |
+
+
+
+## 11.1 安装软件
+
+```bash
+yum install epel-release
+yum install nginx keepalived -y
+```
+
+
+
+## 11.2 配置Nginx
+
+```bash
+cat > /etc/nginx/nginx.conf << "EOF"
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log;
+pid /run/nginx.pid;
+
+include /usr/share/nginx/modules/*.conf;
+
+events {
+    worker_connections 1024;
+}
+
+stream {
+
+    log_format  main  '$remote_addr $upstream_addr - [$time_local] $status $upstream_bytes_sent';
+
+    access_log  /var/log/nginx/k8s-access.log  main;
+
+    upstream k8s-apiserver {
+       server 192.168.80.11:6443;   # Master1 APISERVER IP:PORT
+       server 192.168.80.12:6443;   # Master2 APISERVER IP:PORT
+    }
+    
+    server {
+       listen 16443; 
+       proxy_pass k8s-apiserver;
+    }
+}
+
+http {
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log  /var/log/nginx/access.log  main;
+
+    sendfile            on;
+    tcp_nopush          on;
+    tcp_nodelay         on;
+    keepalive_timeout   65;
+    types_hash_max_size 2048;
+
+    include             /etc/nginx/mime.types;
+    default_type        application/octet-stream;
+
+    server {
+        listen       80 default_server;
+        server_name  _;
+
+        location / {
+        }
+    }
+}
+EOF
+```
+
+
+
+## 11.3 keepalived 配置 (master)
+
+```bash
+cat > /etc/keepalived/keepalived.conf << EOF
+global_defs { 
+   notification_email { 
+     acassen@firewall.loc 
+     failover@firewall.loc 
+     sysadmin@firewall.loc 
+   } 
+   notification_email_from Alexandre.Cassen@firewall.loc  
+   smtp_server 127.0.0.1 
+   smtp_connect_timeout 30 
+   router_id NGINX_MASTER
+} 
+
+# 检查脚本
+vrrp_script check_nginx {
+    script "/etc/keepalived/check_nginx.sh"
+}
+
+vrrp_instance VI_1 { 
+    state MASTER 
+    interface ens33 # 修改为实际网卡名
+    virtual_router_id 51 # VRRP 路由 ID实例，每个实例是唯一的 
+    priority 100    # 优先级，备服务器设置 90 
+    advert_int 1    # 指定VRRP 心跳包通告间隔时间，默认1秒 
+    authentication { 
+        auth_type PASS      
+        auth_pass 1111 
+    }  
+    # 虚拟IP
+    virtual_ipaddress { 
+        192.168.80.10/24
+    } 
+    track_script {
+        check_nginx
+    } 
+}
+EOF
+```
+
+
+
+## 11.4 keepalived 配置 (slave)
+
+```bash
+cat > /etc/keepalived/keepalived.conf << EOF
+global_defs { 
+   notification_email { 
+     acassen@firewall.loc 
+     failover@firewall.loc 
+     sysadmin@firewall.loc 
+   } 
+   notification_email_from Alexandre.Cassen@firewall.loc  
+   smtp_server 127.0.0.1 
+   smtp_connect_timeout 30 
+   router_id NGINX_BACKUP
+} 
+
+# 检查脚本
+vrrp_script check_nginx {
+    script "/etc/keepalived/check_nginx.sh"
+}
+
+vrrp_instance VI_1 { 
+    state BACKUP 
+    interface ens33 # 修改为实际网卡名
+    virtual_router_id 51 # VRRP 路由 ID实例，每个实例是唯一的 
+    priority 90     # 优先级，备服务器设置 90 
+    advert_int 1    # 指定VRRP 心跳包通告间隔时间，默认1秒 
+    authentication { 
+        auth_type PASS      
+        auth_pass 1111 
+    }  
+    # 虚拟IP
+    virtual_ipaddress { 
+        192.168.80.10/24
+    } 
+    track_script {
+        check_nginx
+    } 
+}
+EOF
+```
+
+
+
+## 11.5 keepalived 检查脚本
+
+```bash
+cat > /etc/keepalived/check_nginx.sh  << "EOF"
+#!/bin/bash
+count=$(ss -antp |grep 16443 |egrep -cv "grep|$$")
+
+if [ "$count" -eq 0 ];then
+    exit 1
+else
+    exit 0
+fi
+EOF
+
+chmod +x /etc/keepalived/check_nginx.sh
+```
+
+
+
+## 11.6 启动服务
+
+```bash
+systemctl daemon-reload
+systemctl start nginx keepalived
+systemctl enable nginx keepalived
+```
+
+
+
+## 11.7 状态检查
+
+```bash
+ip addr
+
+curl -k https://192.168.80.10:16443/version
+
+
+{
+  "major": "1",
+  "minor": "19",
+  "gitVersion": "v1.19.11",
+  "gitCommit": "c6a2f08fc4378c5381dd948d9ad9d1080e3e6b33",
+  "gitTreeState": "clean",
+  "buildDate": "2021-05-12T12:19:22Z",
+  "goVersion": "go1.15.12",
+  "compiler": "gc",
+  "platform": "linux/amd64"
+}
+```
+
+
+
+11.8 Worker Node 连接到 LB VIP
+
+```bash
+sed -i 's#192.168.80.11:6443#192.168.80.10:16443#' /opt/kubernetes/cfg/*
+systemctl restart kubelet kube-proxy
+
+kubectl get node
+NAME          STATUS   ROLES    AGE     VERSION
+k8s-master1   Ready    master   3d17h   v1.19.11
+k8s-master2   Ready    master   2d16h   v1.19.11
+k8s-node1     Ready    node     3d15h   v1.19.11
+k8s-node2     Ready    node     3d15h   v1.19.11
+```
+
+
+
+
+
+# 12. 附录
+
+## 12.1 组件日志查询
 
 ```bash
 journalctl -l -u kube-apiserver

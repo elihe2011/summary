@@ -209,3 +209,19 @@ docker run --privileged=true
 docker run -d --name zookeeper --publish 2181:2181 zookeeper
 ```
 
+
+
+# 10. 网络类型
+
+docker五种网络模式：
+
+-  bridge: 桥接式网络模式(默认)
+-  host(open):  开放式网络模式，和宿主机共享网络
+-  container(join):  联合挂载式网络模式，和其他容器共享网络
+-  none(Close):  封闭式网络模式，不为容器配置网络
+-  user-defined: 主要可选的网络驱动有三种：bridge、overlay、macvlan。bridge驱动用于创建类似于前面提到的bridge网络；overlay和macvlan驱动用于创建跨主机的网络。
+
+
+
+docker run --network=container:mysql 
+
