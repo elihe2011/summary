@@ -132,17 +132,6 @@ systemctl status docker
 
 
 
-## 1.5 命令补全
-
-```bash
-yum install -y epel-release bash-completion
-source /usr/share/bash-completion/bash_completion
-source <(kubectl completion bash)
-echo "source <(kubectl completion bash)" >> ~/.bashrc
-```
-
-
-
 ## 1.5 证书工具
 
 只需在主节点上操作
@@ -934,7 +923,14 @@ CURRENT   NAME      CLUSTER      AUTHINFO        NAMESPACE
 
 
 
+## 4.7 kubectl 命令补全
 
+```bash
+yum install -y epel-release bash-completion
+source /usr/share/bash-completion/bash_completion
+source <(kubectl completion bash)
+echo "source <(kubectl completion bash)" >> ~/.bashrc
+```
 
 
 
