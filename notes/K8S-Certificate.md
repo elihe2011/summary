@@ -542,3 +542,54 @@ kubectl config use-context default --kubeconfig=${KUBE_CONFIG}
 - 另外，api-server 额外提供使用 token 方式认证，主要用于集群节点初次加入时的认证和Dashboard登录认证
 - controller-manager, scheduler, kubelet 等对 api-server 的访问，均采用kubeconfig文件方式认证
 
+
+
+# 9. openssl
+
+```bash
+mkdir -p $HOME/docker/ssl && cd $HOME/docker/ssl
+
+# 1. 创建CA私钥
+openssl genrsa -out ca.key 4096
+
+# 生成根证书请求文件
+openssl req -new -key ca.key -out ca.csr -sha256 \
+        -subj '/C=CN/ST=Jiangsu/L=Nanjing/O=XTWL/CN=Docker Registry CA'
+          
+# 配置根证书
+cat > ca.conf <<EOF
+[ca]
+basicConstraints = critical,CA:TRUE,pathlen:1
+keyUsage = critical, nonRepudiation, cRLSign, keyCertSign
+subjectKeyIdentifier=hash
+EOF
+
+# 签发证书
+openssl x509 -req -days 3650  -in ca.csr \
+        -signkey ca.key -sha256 -out ca.crt \
+        -extfile ca.conf -extensions ca
+               
+# 生成SSL私钥
+openssl genrsa -out registry.xtwl.com.key 4096
+
+# 生成证书请求文件
+openssl req -new -key registry.xtwl.com.key -out server.csr -sha256 \
+        -subj '/C=CN/ST=Jiangsu/L=Nanjing/O=XTWL/CN=registry-srv'
+          
+# 配置证书
+cat > server.conf <<EOF
+[server]
+authorityKeyIdentifier=keyid,issuer
+basicConstraints = critical,CA:FALSE
+extendedKeyUsage=serverAuth
+keyUsage = critical, digitalSignature, keyEncipherment
+subjectAltName = DNS:registry.xtwl.com, IP:127.0.0.1
+subjectKeyIdentifier=hash
+EOF
+
+# 签发SSL证书
+openssl x509 -req -days 3650 -in server.csr -sha256 \
+        -CA ca.crt -CAkey ca.key  -CAcreateserial \
+        -out registry.xtwl.com.crt -extfile server.conf -extensions server
+```
+
