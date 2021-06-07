@@ -402,3 +402,9 @@ Jun 02 14:11:22 k8s-node01 dockerd[52488]: time="2021-06-02T14:11:22.614842390+0
 Jun 02 14:11:22 k8s-node01 dockerd[52488]: time="2021-06-02T14:11:22.654911232+08:00" level=info msg="API listen on /var/run/docker.sock"
 ```
 
+
+
+# 5. 结论
+
+- ubuntu 16 安装k8s 不需要升级内核
+- kubelet 启动，docker的 cgroupdriver 必须是 systemd, 否则无法正常启动

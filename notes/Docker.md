@@ -430,6 +430,82 @@ http://192.168.80.250:8080/    admin/Harbor12345
 
 
 
+## 11.3 nexus3
+
+### 11.3.1 安装
+
+```bash
+mkdir -p /opt/nexus3 && chown -R 200 /opt/nexus3
+docker run -d --name nexus3 --restart=always -p 8081:8081 -v /opt/nexus3:/nexus-data sonatype/nexus3
+    
+docker logs -f nexus3
+
+2021-06-07 02:41:05,185+0000 INFO  [jetty-main-1] *SYSTEM org.sonatype.nexus.bootstrap.jetty.JettyServer -
+-------------------------------------------------
+Started Sonatype Nexus OSS 3.30.1-01
+-------------------------------------------------
+```
+
+### 11.3.2 登录
+
+```bash
+# 获取密码
+docker exec nexus3 cat /nexus-data/admin.password
+6ec95425-7966-4582-ad0d-e39a00c0775c
+
+http://192.168.80.250:8081  admin/6ec95425-7966-4582-ad0d-e39a00c0775c
+
+# 按向导修改密码
+admin/admin123
+
+# 开启匿名登录
+```
+
+### 11.3.3 创建仓库
+
+创建一个私有仓库的方法： `Repository->Repositories` 点击右边菜单 `Create repository` 选择 `docker (hosted)`
+
+- **Name**: 仓库的名称
+- **HTTP**: 仓库单独的访问端口（例如：**8082**）
+- **Hosted -> Deplioyment policy**: 请选择 **Allow redeploy** 否则无法上传 Docker 镜像。
+
+其它的仓库创建方法请各位自己摸索，还可以创建一个 `docker (proxy)` 类型的仓库链接到 DockerHub 上。再创建一个 `docker (group)` 类型的仓库把刚才的 `hosted` 与 `proxy` 添加在一起。主机在访问的时候默认下载私有仓库中的镜像，如果没有将链接到 DockerHub 中下载并缓存到 Nexus 中。
+
+### 11.3.4 添加访问权限
+
+菜单 `Security->Realms` 把 Docker Bearer Token Realm 移到右边的框中保存。
+
+添加用户规则：菜单 `Security->Roles`->`Create role` 在 `Privlleges` 选项搜索 docker 把相应的规则移动到右边的框中然后保存。
+
+添加用户：菜单 `Security->Users`->`Create local user` 在 `Roles` 选项中选中刚才创建的规则移动到右边的窗口保存。
+
+### 11.3.5 镜像管理
+
+```bash
+# 登录仓库
+docker login http://192.168.80.250:8082
+Username: admin
+Password:
+WARNING! Your password will be stored unencrypted in /root/.docker/config.json.
+Configure a credential helper to remove this warning. See
+https://docs.docker.com/engine/reference/commandline/login/#credentials-store
+
+# 上传镜像
+docker tag nginx 192.168.80.250:8082/repository/library/nginx:latest
+docker push 192.168.80.250:8082/repository/library/nginx:latest
+The push refers to repository [192.168.80.250:8082/repository/library/nginx]
+075508cf8f04: Pushed
+5c865c78bc96: Pushed
+134e19b2fac5: Pushed
+83634f76e732: Pushed
+766fe2c3fc08: Pushed
+02c055ef67f5: Pushed
+latest: digest: sha256:61191087790c31e43eb37caa10de1135b002f10c09fdda7fa8a5989db74033aa size: 1570
+
+```
+
+
+
 
 # 12. 配置 daemon.json
 
@@ -558,5 +634,69 @@ containerd-shim位于containerd和runc之间，当containerd需要创建运行�
 
 **libcontainer**：docker从0.9版本开始自行开发了libcontainer模块来作为lxc的替代品实现容器底层特性，并在1.10版本彻底去除了lxc。在1.11版本拆分出runc后，libcontainer也随之成为了runc的核心功能模块。
 
+
+
+# 15. 端口开放
+
+## 15.1 iptables
+
+```bash
+docker inspect nexus3 | grep 
+"IPAddress": "172.17.0.2",
+
+iptables -t nat -vnL
+Chain DOCKER (2 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 RETURN     all  --  docker0 *       0.0.0.0/0            0.0.0.0/0
+    0     0 RETURN     all  --  br-ba60ba30e207 *       0.0.0.0/0            0.0.0.0/0
+    0     0 RETURN     all  --  br-d23f80b29ce9 *       0.0.0.0/0            0.0.0.0/0
+    0     0 RETURN     all  --  br-cd186e54925b *       0.0.0.0/0            0.0.0.0/0
+    0     0 DNAT       tcp  --  !br-d23f80b29ce9 *       0.0.0.0/0            127.0.0.1            tcp dpt:1514 to:172.21.0.3:10514
+    0     0 DNAT       tcp  --  !br-d23f80b29ce9 *       0.0.0.0/0            0.0.0.0/0            tcp dpt:8080 to:172.21.0.6:8080
+  851 44508 DNAT       tcp  --  !docker0 *       0.0.0.0/0            0.0.0.0/0            tcp dpt:8081 to:172.17.0.2:8081
+
+# 新增
+iptables -t nat -A  DOCKER -p tcp --dport 8082 -j DNAT --to-destination 172.17.0.2:8082
+iptables -t nat -A  DOCKER -p tcp ! -i docker0 --dport 8082 -j DNAT --to-destination 172.17.0.2:8082
+
+# 删除
+iptables -t nat -vnL DOCKER --line-number
+num   pkts bytes target     prot opt in     out     source               destination
+1        0     0 RETURN     all  --  docker0 *       0.0.0.0/0            0.0.0.0/0
+2        0     0 RETURN     all  --  br-ba60ba30e207 *       0.0.0.0/0            0.0.0.0/0
+3        0     0 RETURN     all  --  br-d23f80b29ce9 *       0.0.0.0/0            0.0.0.0/0
+4        0     0 RETURN     all  --  br-cd186e54925b *       0.0.0.0/0            0.0.0.0/0
+5        0     0 DNAT       tcp  --  !br-d23f80b29ce9 *       0.0.0.0/0            127.0.0.1            tcp dpt:1514 to:172.21.0.3:10514
+6        0     0 DNAT       tcp  --  !br-d23f80b29ce9 *       0.0.0.0/0            0.0.0.0/0            tcp dpt:8080 to:172.21.0.6:8080
+7     1199 62604 DNAT       tcp  --  !docker0 *       0.0.0.0/0            0.0.0.0/0            tcp dpt:8081 to:172.17.0.2:8081
+8       42  2520 DNAT       tcp  --  *      *       0.0.0.0/0            0.0.0.0/0            tcp dpt:8082 to:172.17.0.2:8082
+
+iptables -t nat -D DOCKER 8
+```
+
+
+
+## 15.2 修改配置文件
+
+停止容器，修改 `/var/lib/docker/containers/{CONTAINER_ID}` 下的 `hostconfig.json`和`config.v2.json` 后重启 
+
+注意：需要停止容器和dockerd服务，否则无法生效。不推荐
+
+```bash
+vi hostconfig.json
+"PortBindings":{"8081/tcp":[{"HostIp":"","HostPort":"8081"}],"8082/tcp":[{"HostIp":"","HostPort":"8082"}]},
+
+vi config.v2.json
+"ExposedPorts":{"8081/tcp":{},"8082/tcp":{}},
+```
+
+
+
+## 15.3 生成新镜像
+
+```
+docker commit fda688b2565a nexus3:test
+docker run -rm -p 8081:8081 -p 8082:8082 nexus3:test /bin/sh
+```
 
 
