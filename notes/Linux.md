@@ -11,7 +11,7 @@ iface ens33 inet static
 address 192.168.80.20
 netmask 255.255.255.0
 gateway 192.168.80.2
-dns-nameservers 192.168.80.2
+dns-nameservers 8.8.8.8
 
 sudo ip addr flush ens33
 sudo systemctl restart networking
@@ -204,8 +204,6 @@ EOF
 apt-get update
 apt-get install -y kubelet kubeadm kubectl
 ```
-
-
 
 
 

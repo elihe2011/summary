@@ -12,6 +12,8 @@ Container（容器）是一种便携式、轻量级的操作系统级虚拟化�
 
 Pod 是一组紧密关联的容器集合，它们共享 PID、IPC、Network 和 UTS namespace，是 Kubernetes 调度的基本单位。Pod 内的多个容器共享网络和文件系统，可以通过进程间通信和文件共享这种简单高效的方式组合完成服务。
 
+Pod 是K8S最小的调度单位。
+
 
 
 ## 1.3 Node
@@ -25,6 +27,8 @@ Node 是 Pod 真正运行的主机，可以是物理机，也可以是虚拟机�
 ## 1.4 Namespace
 
 Namespace 是**对一组资源和对象的抽象集合**，比如可以用来将系统内部的对象划分为不同的项目组或用户组。常见的 pods, services, replication controllers 和 deployments 等都是属于某一个 namespace 的（默认是 default），而 node, persistentVolumes 等则不属于任何 namespace。
+
+名称空间通常用于实现租户或项目的资源隔离，从而形成逻辑分组。
 
 
 
@@ -40,7 +44,7 @@ Namespace 是**对一组资源和对象的抽象集合**，比如可以用来将
 
 ## 1.6 Label
 
-Label 是识别 Kubernetes 对象的标签，以 key/value 的方式附加到对象上（key 最长不能超过 63 字节，value 可以为空，也可以是不超过 253 字节的字符串）。
+标签（Label）是将资源进行分类的标识符，就好像超市的商品分类一般。资源标签具体化的就是一个键值型（key/values)数据，使用标签是为了对指定对象进行辨识，比如Pod对象。标签可以在对象创建时进行附加，也可以创建后进行添加或修改。要知道的是一个对象可以有多个标签，一个标签页可以附加到多个对象。
 
 Label 不提供唯一性，并且实际上经常是很多对象（如 Pods）都使用相同的 label 来标志具体的应用。
 
@@ -54,7 +58,19 @@ Label 定义好后其他对象可以使用 Label Selector 来选择一组相同 
 
 ## 1.7 Annotations
 
-Annotations 是 key/value 形式附加于对象的注解。不同于 Labels 用于标志和选择对象，Annotations 则是用来记录一些附加信息，用来辅助应用部署、安全策略以及调度策略等。比如 deployment 使用 annotations 来记录 rolling update 的状态。
+Annotation是另一种附加在对象上的一种键值类型的数据，常用于将各种非标识型元数据（metadata）附加到对象上，但它并不能用于标识和选择对象。其作用是方便工具或用户阅读及查找。比如用来记录一些附加信息，用来辅助应用部署、安全策略以及调度策略等。 deployment 使用 annotations 来记录 rolling update 的状态。
+
+
+
+## 1.8 Volume
+
+存储卷（Volume）是独立于容器文件系统之外的存储空间，常用于扩展容器的存储空间并为其提供持久存储能力。存储卷在K8S中的分类为：临时卷、本地卷和网络卷。临时卷和本地卷都位于Node本地，一旦Pod被调度至其他Node节点，此类型的存储卷将无法被访问，因为临时卷和本地卷通常用于数据缓存，持久化的数据通常放置于持久卷（persistent volume）之中。
+
+
+
+## 1.9 Ingress
+
+K8S将Pod对象和外部的网络环境进行了隔离，Pod和Service等对象之间的通信需要通过内部的专用地址进行，如果需要将某些Pod对象提供给外部用户访问，则需要给这些Pod对象打开一个端口进行引入外部流量，除了Service以外，Ingress也是实现提供外部访问的一种方式。
 
 
 
@@ -92,6 +108,14 @@ Annotations 是 key/value 形式附加于对象的注解。不同于 Labels 用�
 
 
 
+
+# 3. 网络
+
+K8S集群包含三个网络：
+
+- 节点网络：各主机（Master、Node、ETCD等）自身所属的网络，地址配置在主机的网络接口，用于各主机之间的通信，又称为节点网络。
+- Pod网络：专用于Pod资源对象的网络，它是一个虚拟网络，用于为各Pod对象设定IP地址等网络参数，其地址配置在Pod中容器的网络接口上。Pod网络需要借助kubelet插件或CNI插件实现。
+- Service网络：专用于Service资源对象的网络，它也是一个虚拟网络，用于为K8S集群之中的Service配置IP地址，但是该地址不会配置在任何主机或容器的网络接口上，而是通过Node上的kube-proxy配置为iptables或ipvs规则，从而将发往该地址的所有流量调度到后端的各Pod对象之上。
 
 
 

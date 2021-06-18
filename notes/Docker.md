@@ -700,3 +700,20 @@ docker run -rm -p 8081:8081 -p 8082:8082 nexus3:test /bin/sh
 ```
 
 
+
+# 16. 容器自动启动
+
+```bash
+# 创建容器时
+--restart=always
+
+# 容器运行时更新
+docker update --restart=always 07fb7442f813
+```
+
+`--restart` 参数值：
+
+- no: 不自动重启，默认值
+- on-failure: 容器错误退出，即退出码不为0时，重启容器
+- always：容器停止，自动重启。如果手动停止，需要重启dockerd进程或者重启容器本身才生效。主要用于宿主机重启后，自动启动容器
+- unless-stopped：同always，但当手动停止，即使重启dockerd进程，也无法自动启动容器

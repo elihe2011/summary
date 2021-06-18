@@ -85,16 +85,24 @@ reboot
 
 ```bash
 # 1. 下载并安装
-wget http://docker-release-yellow-prod.s3-website-us-east-1.amazonaws.com/linux/static/stable/x86_64/docker-19.03.9.tgz
+wget https://download.docker.com/linux/static/stable/x86_64/docker-19.03.9.tgz
 tar zxvf docker-19.03.9.tgz
 mv docker/* /usr/bin
 docker version
 
 # 2. 创建配置文件
 mkdir -p /etc/docker
-cat > /etc/docker/daemon.json << EOF
+cat > /etc/docker/daemon.json <<EOF
 {
-  "registry-mirrors": ["https://pvjhx571.mirror.aliyuncs.com"]
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2",
+  "storage-opts": [
+    "overlay2.override_kernel_check=true"
+  ]
 }
 EOF
 
@@ -1532,11 +1540,19 @@ coredns-867bfd96bd-264bb   1/1     Running   0          37s
 kubectl run -it --rm dns-test --image=busybox:1.33.1 /bin/sh
 If you don't see a command prompt, try pressing enter.
 / # nslookup kubernetes
-Server:         10.0.0.2
-Address:        10.0.0.2:53
+Server:    10.254.0.2
+Address 1: 10.254.0.2 kube-dns.kube-system.svc.cluster.local
 
-Name:   kubernetes.default.svc.cluster.local
-Address: 10.0.0.1
+Name:      kubernetes
+Address 1: 10.254.0.1 kubernetes.default.svc.cluster.local
+
+/ # nslookup baidu.com
+Server:    10.254.0.2
+Address 1: 10.254.0.2 kube-dns.kube-system.svc.cluster.local
+
+Name:      baidu.com
+Address 1: 220.181.38.148
+Address 2: 39.156.69.79
 ```
 
 
