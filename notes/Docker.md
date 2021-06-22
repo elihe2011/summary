@@ -535,19 +535,15 @@ systemctl restart docker
 
 # 14. Docker 组件
 
-````mermaid
-graph LR
-    A(docker) -->B(dockerd)
-    B --grpc--> C(containerd)
-    C --exec--> D(docker-shim)
-    D --exec--> E(runC)
-````
+docker最主要的三项特性：
 
-OCI 标准化的产物：
+- 镜像化  unionfs
+- 空间隔离   namespace
+- 资源隔离   cgroup
 
-- containerd: 高性能容器运行时
-- containerd-ctr: containerd的命令行客户端
-- runc: 运行容器的命令行工具
+
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/docker-components.png) 
 
 
 
@@ -596,43 +592,119 @@ Docker 如何运行一个容器？
 
 ## 14.1 docker
 
-docker命令，是一个客户端(CLI)工具，用来执行容器的各种操作。它将用户输入的命令和参数转换为后端服务的调用参数，通过调用后端服务来实现各类容器操作。
+docker 程序是一个客户端工具，用来把用户的请求发送给 docker daemon(dockerd)
 
 
 
 ## 14.2 dockerd
 
-运行于服务器上的后台守护进程（daemon），负责实现容器镜像的拉取和管理以及容器创建、运行等各类操作。dockerd向外提供RESTful API，其他程序（如docker客户端）可以通过API来调用dockerd的各种功能，实现对容器的操作。但时至今日，在dockerd中实现的容器管理功能也已经不多，主要是镜像下载和管理相关的功能，其他的容器操作能力已经分离到containerd组件中，通过grpc接口来调用。又被称为docker engine、docker daemon。
+docker daemon(dockerd)，即 docker engine。运行于服务器上的后台守护进程，负责实现容器镜像的拉取和管理以及容器创建、运行等各类操作。dockerd向外提供RESTful API，其他程序（如docker客户端）可以通过API来调用dockerd的各种功能，实现对容器的操作。
 
 
 
 ## 14.3 containerd
 
-另一个后台守护进程，是真正实现容器创建、运行、销毁等各类操作的组件，它也包含了独立于dockerd的镜像下载、上传和管理功能。containerd向外暴露grpc形式的接口来提供容器操作能力。dockerd在启动时会自动启动containerd作为其容器管理工具，当然containerd也可以独立运行。containerd是从docker中分离出来的容器管理相关的核心能力组件。但是为了支持容器功能实现的灵活性和开放性，更底层的容器操作实现（例如cgroup的创建和管理、namespace的创建和使用等）并不是由containerd提供的，而是通过调用另一个组件runc来实现。
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/docker-component-architecture.png)
+
+**Containerd 是一个工业级标准的容器运行时，它强调简单性、健壮性和可移植性**。主要负责：
+
+- 管理容器的生命周期(从创建到销毁)
+- 拉取/推送容器镜像
+- 存储管理(管理镜像及容器数据的存储)
+- 调用 runC 等容器运行时
+- 管理容器网络
 
 
 
-## 14.4 runc
+### 14.3.1 为什么 containerd 要独立
 
-实现了容器的底层功能，例如创建、运行等。runc通过调用内核接口为容器创建和管理cgroup、namespace等Linux内核功能，来实现容器的核心特性。runc是一个可以直接运行的二进制程序，对外提供的接口就是程序运行时提供的子命令和命令参数。runc内通过调用内置的libcontainer库功能来操作cgroup、namespace等内核特性。
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/containerd-standardization.png)
+
+**Containerd 被设计成嵌入到一个更大的系统中，而不是直接由开发人员或终端用户使用**。表现如下：
+
+- 彻底从docker引擎中分离
+- 可被 Kubernetes CRI 等项目直接调用
+
+- 当 containerd 和 runC 成为标准化容器服务的基石后，上层应用可以直接建立在 containerd 和 runC 之上。
+
+### 14.3.2 containerd 架构
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/containerd-architecture.png)
+
+containerd 被设计成 snapshotter 的模式，这也使得它对于 overlay 文件系、snapshot 文件系统的支持比较好。
+storage、metadata 和 runtime 的三大块划分非常清晰，通过抽象出 events 的设计，网络层面的复杂度交给了上层处理，仅提供 network namespace 相关的一些接口添加和配置 API。这样保留最小功能集合的纯粹和高效，将更多的复杂性及灵活性交给了插件及上层系统。
 
 
 
-## 14.5 containerd-shim
+## 14.4 containerd-shim
 
-containerd-shim位于containerd和runc之间，当containerd需要创建运行容器时，它没有直接运行runc，而是运行了shim，再由shim间接的运行runc。shim主要有3个用途：
+containerd 的组件，是容器的运行时载体，在 docker 宿主机上看到的 shim 也正是代表着一个个通过调用 containerd 启动的 docker 容器
 
-1. 让runc进程可以退出，不需要一直运行。这里有个疑问，为了让runc可以退出所以再启动一个shim，听起来似乎没什么意义。我理解这样设计的原因还是想让runc的功能集中在容器核心功能本身，同时也便于runc的后续升级。shim作为一个简单的中间进程，不太需要升级，其他组件升级时它可以保持运行，从而不影响已运行的容器。
-2. 作为容器中进程的父进程，为容器进程维护stdin等管道fd。如果containerd直接作为容器进程的父进程，那么一旦containerd需要升级重启，就会导致管道和tty master fd被关闭，容器进程也会执行异常而退出。
-3. 运行容器的退出状态被上报到docker等上层组件，又避免上层组件进程作为容器进程的直接父进程来执行wait4等待。这一条没太理解，可能与shim实现相关，或许是shim有什么别的方式可以上报容器的退出状态从而不需要直接等待它？需要阅读shim的实现代码来确认。
+containerd-shim 的作用：
+
+- 允许 runC 在启动容器之后退出，即不必为每个容器一直运行一个容器运行时
+- 即使 containerd 和 dockerd 都挂掉，容器的标准 IO 和其它的文件描述符也都是可用的
+- 向 containerd 报告容器的退出状态
 
 
 
-## 14.5 其他技术名词
+## 14.5 runC
 
-**LXC**：LinuX Containers ，它是一个加强版的Chroot。LXC就是将不同的应用隔离开来，这其有点类似于chroot，chroot是将应用隔离到一个虚拟的私有root下，而LXC在这之上更进了一步。LXC内部依赖Linux内核的3种隔离机制（isolation infrastructure）：**Chroot、Cgroups、Namespaces**。 LXC是最早的linux容器技术，早期版本的docker直接使用lxc来实现容器的底层功能。虽然使用者相对较少，但lxc项目仍在持续开发演进中。
+RunC 是一个轻量级的工具，它是用来运行容器的，只用来做这一件事，并且这一件事要做好。runC 是标准化的产物，它根据 OCI 标准来创建和运行容器。
 
-**libcontainer**：docker从0.9版本开始自行开发了libcontainer模块来作为lxc的替代品实现容器底层特性，并在1.10版本彻底去除了lxc。在1.11版本拆分出runc后，libcontainer也随之成为了runc的核心功能模块。
+RunC 默认要支持 seccomp ( secure computing mode，即安全计算模型)，编译时，先安装 libseccomp-dev
+
+容器的状态转移：
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/oci-container-status.png)
+
+
+
+## 14.6 K8S 引入的新组件
+
+k8s 调用 docker：
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-invoke-docker-legacy.png)
+
+**kubelet**：k8s 工作节点上的服务进程，负责管理该节点上的容器。k8s系统对容器的创建、删除等调度行为都需要通过节点上的kubelet来完成。
+
+**dockershim**：kubelet和dockerd交互的中间接口。dockershim 提供了一个标准接口，让kubelet能够专注于容器调度逻辑本身，而不用去适配 dockerd 接口变动。而其他实现了相同标准接口的容器技术也可以被kubelet集成使用，这个接口称作CRI。dockershim 是对 CRI 接口调用 dockerd 的一种实现。**dockershim并不是docker技术的一部分，而是k8s系统的一部分**。
+
+
+
+k8s 1.20+ 默认不再使用dockershim，并将在后续版本中删除dockershim，这意味着kubelet不再通过dockerd操作容器。
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-invoke-docker-new.png)
+
+在新的架构中，kubelet直接与containerd交互，跳过了dockershim和dockerd这两个步骤。containerd通过其内置的CRI插件提供了CRI兼容接口。
+
+**cri-containerd**：在k8s和containerd的适配过程中，还曾经出现过cri-containerd这个组件。在containerd1.0版本中，containerd提供了cri-containerd作为独立进程来实现CRI接口，其定位和dockershim类似。但在containerd1.1版本中，就将这个功能改写成了插件形式直接集成到了containerd进程内部，使containerd可以直接支持CRI接口，cri-containerd也被合入了containerd，作为其一个内置插件包存在。
+
+
+
+## 14.6 其他技术名词
+
+**LXC**：LinuX Containers ，它是一个加强版的Chroot。其作用是将不同的应用隔离开来，有点类似于chroot，chroot是将应用隔离到一个虚拟的私有root下，而LXC在这之上更进了一步。LXC依赖 Kernel 的3种隔离机制(isolation infrastructure)：**Chroot、Cgroups、Namespaces**。
+
+**libcontainer**：docker0.9 开发了 libcontainer 模块来作为 LXC 的替代品实现容器底层特性，并在1.10版本彻底去除了LXC。在1.11版本拆分出runc后，libcontainer 也随之成为了runc的核心功能模块。
+
+**moby**：docker公司发起的开源项目，其中最主要的部分就是同名组件moby，事实上这个moby就是dockerd目前使用的开源项目名称，docker项目中的engine（dockerd）仓库现在就是从moby仓库fork而来的。
+
+**docker-ce**：docker的开源版本，CE指Community Edition。docker-ce中的组件来自于moby、containerd等其他项目。
+
+**docker-ee**：docker的收费版本，EE指Enterprise Edition。
+
+**CRI**：Container Runtime Interface，容器运行时接口。它是容器操作接口标准，符合CRI标准的容器模块才能集成到k8s体系中与kubelet交互。符合CRI的容器技术模块包括dockershim（用于兼容dockerd）、rktlet（用于兼容rkt）、containerd(with CRI plugin)、CRI-O等。
+
+**rkt与rktlet**：CoreOS公司主导的容器技术，在早期得到了k8s的支持成为k8s集成的两种容器技术之一。随着CRI接口的提出，k8s团队也为rkt提供了rktlet模块用于与rkt交互，rktlet和dockersim的意义基本相同。随着CoreOS被Redhat收购，rkt已经停止了研发，rktlet已停止维护了。
+
+**CRI-O**：Redhat公司推出的容器技术。从名字就能看出CRI-O的出发点就是一种原生支持CRI接口规范的容器技术。CRI-O同时兼容OCI接口和docker镜像格式。CRI-O的设计目标和特点在于它是一项轻量级的技术，k8s可以通过使用CRI-O来调用不同的底层容器运行时模块，例如runc。
+
+**OCI**：Open Container Initiative，开放容器倡议。容器相关标准的制定组织。OCI标准主要包括两部分：镜像标准和运行时标准。符合OCI运行时标准的容器底层实现模块能够被containerd、CRI-O等容器操作模块集成调用。runc就是从docker中拆分出来捐献给OCI组织的底层实现模块，也是第一个支持OCI标准的模块。除了runc外，还有gVisor（runsc）、kata等其他符合OCI标准的实现。
+
+**gVisor**：google开源的一种容器底层实现技术，对应的模块名称是runsc。其特点是安全性，runsc中实现了对linux系统调用的模拟实现，从而在用户态实现应用程序需要的内核功能，减小了恶意程序通过内核漏洞逃逸或攻击主机的可能性。
+
+**kata**：Hyper和Intel合作开源的一种容器底层实现技术。kata通过轻量级虚拟机的方式运行容器，容器内的进程都运行在一个kvm虚拟机中。通过这种方式，kata实现了容器和物理主机间的安全隔离。
 
 
 
