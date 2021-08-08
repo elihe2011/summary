@@ -11,7 +11,7 @@ iface ens33 inet static
 address 192.168.80.20
 netmask 255.255.255.0
 gateway 192.168.80.2
-dns-nameservers 192.168.80.2
+dns-nameservers 8.8.8.8
 
 sudo ip addr flush ens33
 sudo systemctl restart networking
@@ -71,7 +71,7 @@ sudo ps -ef | grep ssh
 
 ```bash
 # 可能缺少的公共命令
-sudo apt-get install software-properties-common
+sudo apt-get install software-properties-common -y
 
 # 证书
 sudo curl -fsSL http://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg | sudo apt-key add -
@@ -86,7 +86,7 @@ sudo apt-get update
 sudo apt-cache policy docker-ce
 
 # 安装 docker 19.03.15~3-0~ubuntu-xenial
-sudo apt-get install docker-ce=5:19.03.15~3-0~ubuntu-xenial
+sudo apt-get install docker-ce=5:19.03.15~3-0~ubuntu-xenial -y
 
 sudo docker version
 
@@ -139,6 +139,98 @@ sudo ufw allow 6379/tcp
 ```
 
 
+
+## 1.7 阿里源
+
+ubuntu16:
+
+```bash
+sudo -i
+
+echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+
+mv /etc/apt/sources.list /etc/apt/sources.list.bak
+
+cat > /etc/apt/sources.list <<EOF
+# deb cdrom:[Ubuntu 16.04 LTS _Xenial Xerus_ - Release amd64 (20160420.1)]/ xenial main restricted
+deb-src http://archive.ubuntu.com/ubuntu xenial main restricted #Added by software-properties
+deb http://mirrors.aliyun.com/ubuntu/ xenial main restricted
+deb-src http://mirrors.aliyun.com/ubuntu/ xenial main restricted multiverse universe #Added by software-properties
+deb http://mirrors.aliyun.com/ubuntu/ xenial-updates main restricted
+deb-src http://mirrors.aliyun.com/ubuntu/ xenial-updates main restricted multiverse universe #Added by software-properties
+deb http://mirrors.aliyun.com/ubuntu/ xenial universe
+deb http://mirrors.aliyun.com/ubuntu/ xenial-updates universe
+deb http://mirrors.aliyun.com/ubuntu/ xenial multiverse
+deb http://mirrors.aliyun.com/ubuntu/ xenial-updates multiverse
+deb http://mirrors.aliyun.com/ubuntu/ xenial-backports main restricted universe multiverse
+deb-src http://mirrors.aliyun.com/ubuntu/ xenial-backports main restricted universe multiverse #Added by software-properties
+deb http://archive.canonical.com/ubuntu xenial partner
+deb-src http://archive.canonical.com/ubuntu xenial partner
+deb http://mirrors.aliyun.com/ubuntu/ xenial-security main restricted
+deb-src http://mirrors.aliyun.com/ubuntu/ xenial-security main restricted multiverse universe #Added by software-properties
+deb http://mirrors.aliyun.com/ubuntu/ xenial-security universe
+deb http://mirrors.aliyun.com/ubuntu/ xenial-security multiverse
+EOF
+
+apt-get update
+```
+
+
+
+ubuntu20:
+
+```bash
+mv /etc/apt/sources.list /etc/apt/sources.list.bak
+
+cat > /etc/apt/sources.list <<EOF
+deb http://mirrors.aliyun.com/ubuntu/ focal main restricted universe multiverse
+deb-src http://mirrors.aliyun.com/ubuntu/ focal main restricted universe multiverse
+
+deb http://mirrors.aliyun.com/ubuntu/ focal-security main restricted universe multiverse
+deb-src http://mirrors.aliyun.com/ubuntu/ focal-security main restricted universe multiverse
+
+deb http://mirrors.aliyun.com/ubuntu/ focal-updates main restricted universe multiverse
+deb-src http://mirrors.aliyun.com/ubuntu/ focal-updates main restricted universe multiverse
+
+deb http://mirrors.aliyun.com/ubuntu/ focal-proposed main restricted universe multiverse
+deb-src http://mirrors.aliyun.com/ubuntu/ focal-proposed main restricted universe multiverse
+
+deb http://mirrors.aliyun.com/ubuntu/ focal-backports main restricted universe multiverse
+deb-src http://mirrors.aliyun.com/ubuntu/ focal-backports main restricted universe multiverse
+EOF
+
+apt update
+```
+
+
+
+## 1.8 时区
+
+```bash
+ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+
+# alternative
+timedatectl set-timezone "Asia/Shanghai"
+timedatectl status
+```
+
+
+
+## 1.9 k8s
+
+```bash
+apt-get update && apt-get install -y apt-transport-https
+
+curl https://mirrors.aliyun.com/kubernetes/apt/doc/apt-key.gpg | apt-key add - 
+
+# ubuntu16
+cat >/etc/apt/sources.list.d/kubernetes.list <<EOF
+deb https://mirrors.aliyun.com/kubernetes/apt/ kubernetes-xenial main
+EOF
+
+apt-get update
+apt-get install -y kubelet kubeadm kubectl
+```
 
 
 
@@ -215,6 +307,26 @@ tcpdump portrange 21-23
 
 tcpdump -vvAls0 | grep 'User-Agent:'
 tcpdump -vvAls0 | grep 'Set-Cookie|Host:|Cookie:'
+```
+
+
+
+## 4.3 k8s
+
+```bash
+cat > /etc/yum.repos.d/kubernetes.repo <<EOF
+[kubernetes]
+name=Kubernetes
+baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://mirrors.aliyun.com/kubernetes/yum/doc/yum-key.gpg https://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg
+EOF
+
+setenforce 0
+yum install -y kubelet kubeadm kubectl
+systemctl enable kubelet && systemctl start kubelet
 ```
 
 
