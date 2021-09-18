@@ -4,6 +4,8 @@
 docker pull mysql:5.7
 docker run --name mysql-server -p 3306:3306 -v /data/mysql/data:/var/lib/mysql -e MYSQL_ROOT_PASSWORD=123456 -d mysql:5.7
 
+docker run --name mysql-server -p 3306:3306 -v /data/mysql/data:/var/lib/mysql -e MYSQL_ROOT_PASSWORD=123456 -d mysql
+
 docker pull redis:6.0.10
 docker run --name reids-server -p 6379:6379 -d redis:6.0.10
 
