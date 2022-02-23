@@ -1,4 +1,4 @@
-# 1. 修改后缀名 (Windows)
+# 1. 修改后缀名
 
 ```bash
 @echo off

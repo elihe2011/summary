@@ -1,0 +1,371 @@
+# 1. 准备工作
+
+| **角色**   | **IP**         | **组件**                                                     |
+| ---------- | -------------- | ------------------------------------------------------------ |
+| k8s-master | 192.168.80.100 | kube-apiserver，kube-controller-manager，kube-scheduler，docker, etcd |
+| k8s-node01 | 192.168.80.101 | kubelet，kube-proxy，docker，etcd                            |
+| k8s-node02 | 192.168.80.102 | kubelet，kube-proxy，docker，etcd                            |
+
+docker 版本：docker-ce 20.10.9
+
+kuberenetes 版本：1.21.4
+
+
+
+```bash
+# 1. 修改主机名
+hostnamectl set-hostname k8s-master
+hostnamectl set-hostname k8s-node01
+hostnamectl set-hostname k8s-node02
+
+# 2. 主机名解析
+cat >> /etc/hosts <<EOF
+192.168.80.100  k8s-master
+192.168.80.101  k8s-node01
+192.168.80.102  k8s-node02
+EOF
+
+# 3. 禁用 swap
+swapoff -a && sed -i '/swap/ s/^\(.*\)$/#\1/g' /etc/fstab
+
+# 4. 时间同步 
+apt install ntpdate -y 
+ntpdate ntp1.aliyun.com
+
+crontab -e
+*/30 * * * * /usr/sbin/ntpdate-u ntp1.aliyun.com >> /var/log/ntpdate.log 2>&1
+
+# 5. 内核参数调整
+modprobe br_netfilter
+
+cat > /etc/sysctl.d/kubernetes.conf <<EOF
+net.bridge.bridge-nf-call-iptables=1
+net.bridge.bridge-nf-call-ip6tables=1
+net.ipv4.ip_forward=1
+net.ipv4.tcp_tw_recycle=0           # 表示开启TCP连接中TIME-WAIT sockets的快速回收，默认为0，表示关闭
+vm.swappiness=0                     # 禁止使用 swap 空间，只有当系统 OOM 时才允许使用它
+vm.overcommit_memory=1              # 不检查物理内存是否够用
+fs.inotify.max_user_instances=8192  # 开启 OOM
+vm.panic_on_oom=0 
+fs.inotify.max_user_watches=1048576
+fs.file-max=52706963
+fs.nr_open=52706963
+net.ipv6.conf.all.disable_ipv6=1
+EOF
+
+sysctl -p /etc/sysctl.d/kubernetes.conf
+
+# 6. 开启 ipvs
+lsmod|grep ip_vs
+
+for i in $(ls /lib/modules/$(uname -r)/kernel/net/netfilter/ipvs|grep -o "^[^.]*"); do echo $i; /sbin/modinfo -F filename $i >/dev/null 2>&1 && /sbin/modprobe $i; done
+
+ls /lib/modules/$(uname -r)/kernel/net/netfilter/ipvs|grep -o "^[^.]*" >> /etc/modules
+
+# 7. 安装 ipvsadm
+apt install ipvsadm ipset -y
+```
+
+
+
+# 2. docker
+
+```bash
+# 1. 安装GPG证书
+curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg | sudo apt-key add -
+
+# 2. 写入软件源信息
+add-apt-repository "deb [arch=amd64] https://mirrors.aliyun.com/docker-ce/linux/ubuntu $(lsb_release -cs) stable"
+
+# 3. 更新
+apt update
+
+# 4. 查询版本
+apt-cache madison docker-ce
+#docker-ce | 5:20.10.9~3-0~ubuntu-focal | https://mirrors.aliyun.com/docker-ce/linux/ubuntu focal/stable amd64 Packages
+
+# 5. 安装
+apt install docker-ce=5:20.10.9~3-0~ubuntu-focal -y
+
+# 6. 验证
+docker version
+
+# 7. 修改cgroup驱动为systemd，适配k8s默认选项
+cat > /etc/docker/daemon.json <<EOF
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2",
+  "storage-opts": [
+    "overlay2.override_kernel_check=true"
+  ]
+}
+EOF
+
+systemctl restart docker
+```
+
+
+
+# 1.3 kubeadm
+
+## 3.1 简介
+
+作用：**将kuberenets大部分组件都容器化，通过StaticPod方式运行，并自动化了大部分的集群配置及认证等工作，简单几步即可搭建一个可用k8ss的集群。**
+
+- `kubeadm init`：**master 节点创建**
+
+  - 检查当前机器是否合规
+
+  - 自动生成集群运行所需的各类证书及各类配置，并将master节点信息保存在名为cluster-info的ConfigMap中
+
+  - 通过Static Pod方式，运行API server、controller manager 、scheduler及etcd组件。
+
+  - 生成Token以便其他节点加入集群
+
+
+- `kubeadm join`：**node 节点加入集群**
+- 节点通过token访问kube-apiserver，获取cluster-info中信息，主要是apiserver的授权信息（节点信任集群）。
+  
+- 通过授权信息，kubelet可执行TLS bootstrapping，与apiserver真正建立互信任关系（集群信任节点）。
+
+
+
+
+## 3.2 安装
+
+```bash
+# 1. 安装GPG证书
+curl -fsSL https://mirrors.aliyun.com/kubernetes/apt/doc/apt-key.gpg | apt-key add - 
+
+# 2. 写入软件源信息
+cat > /etc/apt/sources.list.d/kubernetes.list <<EOF
+deb https://mirrors.aliyun.com/kubernetes/apt/ kubernetes-xenial main
+EOF
+
+# 3. 更新
+apt update
+
+# 4. 查询版本
+apt-cache madison kubeadm
+#kubeadm |  1.21.4-00 | https://mirrors.aliyun.com/kubernetes/apt kubernetes-xenial/main amd64 Packages
+
+# 5. 安装
+#### master ####
+apt-get install -y kubeadm=1.21.4-00 kubelet=1.21.4-00 kubectl=1.21.4-00
+
+#### node ####
+apt-get install -y kubeadm=1.21.4-00 kubelet=1.21.4-00
+```
+
+
+
+# 4. 安装集群
+
+## 4.1 Master 节点
+
+**初始化：**
+
+```bash
+kubeadm init \
+  --apiserver-advertise-address=192.168.80.100 \
+  --image-repository registry.aliyuncs.com/google_containers \
+  --kubernetes-version v1.21.4 \
+  --service-cidr=10.96.0.0/12 \
+  --pod-network-cidr=10.244.0.0/16 \
+  --ignore-preflight-errors=all
+```
+
+输出结果：
+
+```bash
+[kubelet-finalize] Updating "/etc/kubernetes/kubelet.conf" to point to a rotatable kubelet client certificate and key
+[addons] Applied essential addon: CoreDNS
+[addons] Applied essential addon: kube-proxy
+
+Your Kubernetes control-plane has initialized successfully!
+
+To start using your cluster, you need to run the following as a regular user:
+
+  mkdir -p $HOME/.kube
+  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+Alternatively, if you are the root user, you can run:
+
+  export KUBECONFIG=/etc/kubernetes/admin.conf
+
+You should now deploy a pod network to the cluster.
+Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
+  https://kubernetes.io/docs/concepts/cluster-administration/addons/
+
+Then you can join any number of worker nodes by running the following on each as root:
+
+kubeadm join 192.168.80.100:6443 --token kk34dk.6xperiryclvx6aow \
+        --discovery-token-ca-cert-hash sha256:f84bd0402f8fc862f70daae3fb92be33a384b8ce74c663b7c1d5d95781bc7a1d
+```
+
+根据提示，创建 `kubectl` 认证文件：
+
+```bash
+# 即使是root用户，也采用默认文件方式
+mkdir -p $HOME/.kube
+cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+chown $(id -u):$(id -g) $HOME/.kube/config
+```
+
+kubectl 命令补齐：
+
+```bash
+echo "source <(kubectl completion bash)" >> ~/.bashrc
+
+# 立即生效
+source <(kubectl completion bash)
+```
+
+
+
+## 4.2 Node 节点
+
+加入集群：
+
+```bash
+kubeadm join 192.168.80.100:6443 --token kk34dk.6xperiryclvx6aow \
+    --discovery-token-ca-cert-hash sha256:f84bd0402f8fc862f70daae3fb92be33a384b8ce74c663b7c1d5d95781bc7a1d
+```
+
+**token 过期**: kubeadm join 加入集群时，需要2个参数，`--token`与`--discovery-token-ca-cert-hash`。其中，token有限期一般是24小时，如果超过时间要新增节点，就需要重新生成token。
+
+```bash
+# 查询token
+kubeadm token list
+TOKEN                     TTL   EXPIRES                USAGES           DESCRIPTION         EXTRA GROUPS
+kk34dk.6xperiryclvx6aow   23h   2021-12-06T07:55:59Z   authentication,signing   The default bootstrap token generated by 'kubeadm init'.   system:bootstrappers:kubeadm:default-node-token
+
+# 创建 token
+kubeadm token create
+s058gw.c5x6eeze2875sza1
+
+# discovery-token-ca-cert-hash
+openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'
+986154509030b5a816cd6afc796d104c0f3fe24ff1e59bf769cb89b72f904112
+
+# 新节点加入
+kubeadm join 192.168.80.40:6443 --token s058gw.c5x6eeze2875sza1 \
+    --discovery-token-ca-cert-hash sha256:986154509030b5a816cd6afc796d104c0f3fe24ff1e59bf769cb89b72f904112
+```
+
+
+
+# 5. 网络插件
+
+未安装网络插件，节点没有 Ready
+
+```bash
+kubectl get node
+NAME         STATUS     ROLES                  AGE     VERSION
+k8s-master   NotReady   control-plane,master   15m     v1.21.4
+k8s-node01   NotReady   <none>                 5m58s   v1.21.4
+k8s-node02   NotReady   <none>                 5m45s   v1.21.4
+```
+
+安装 flannel：
+
+```bash
+wget https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+
+# 确保网络配置与 `--pod-network-cidr=10.244.0.0/16` 一致
+vi kube-flannel.yml
+  net-conf.json: |
+    {
+      "Network": "10.244.0.0/16",
+ 
+kubectl apply -f kube-flannel.yml
+
+kubectl get pod -n kube-system
+NAME                    READY   STATUS    RESTARTS   AGE
+kube-flannel-ds-8qnnx   1/1     Running   0          10s
+kube-flannel-ds-979lc   1/1     Running   0          16m
+kube-flannel-ds-kgmgg   1/1     Running   0          16m
+
+kubectl get node
+NAME         STATUS   ROLES                  AGE   VERSION
+k8s-master   Ready    control-plane,master   43m   v1.21.4
+k8s-node01   Ready    <none>                 33m   v1.21.4
+k8s-node02   Ready    <none>                 32m   v1.21.4
+```
+
+
+
+# 6. ipvs
+
+开启 kube-proxy 协议为 ipvs
+
+```bash
+kubectl edit configmap kube-proxy -n kube-system
+    mode: "ipvs"
+```
+
+
+
+# 7. 集群状态
+
+集群状态异常：
+
+```bash
+$ kubectl get cs
+NAME                 STATUS      MESSAGE                                           ERROR
+scheduler            Unhealthy   Get "http://127.0.0.1:10251/healthz": dial tcp 127.0.0.1:10251: connect: connection refused
+controller-manager   Unhealthy   Get "http://127.0.0.1:10252/healthz": dial tcp 127.0.0.1:10252: connect: connection refused
+etcd-0               Healthy     {"health":"true"}
+```
+
+
+
+原因：使用了非安全端口。按如下方法修改
+
+```bash
+$ vi /etc/kubernetes/manifests/kube-scheduler.yaml 
+...
+spec:
+  containers:
+  - command:
+    - kube-scheduler
+    - --kubeconfig=/etc/kubernetes/scheduler.conf
+    - --leader-elect=true
+    #- --port=0    # 注释掉
+    image: k8s.gcr.io/kube-scheduler:v1.18.6
+
+$ vi /etc/kubernetes/manifests/kube-controller-manager.yaml
+...
+spec:
+  containers:
+  - command:
+    - kube-controller-manager
+    - --node-cidr-mask-size=24
+    #- --port=0   # 注释掉
+    - --requestheader-client-ca-file=/etc/kubernetes/pki/front-proxy-ca.crt
+
+# 重启kubelet
+$ systemctl restart kubelet
+
+# 再次查询状态
+$ kubectl get cs
+NAME                 STATUS    MESSAGE             ERROR
+scheduler            Healthy   ok                  
+controller-manager   Healthy   ok                  
+etcd-0               Healthy   {"health":"true"}   
+```
+
+
+
+# 8. 命令补全
+
+```bash
+echo "source <(kubectl completion bash)" >> ~/.bashrc
+source ~/.bashrc
+```
+

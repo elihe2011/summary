@@ -1,0 +1,1385 @@
+# 1. 概念
+
+Service 是一个 L4 (TCP/UDP/SCTP) Load Balancer，它通过`kube-proxy`，使用 DNAT 将入站流量重定向到后端 Pod中。
+
+通过创建 Service， 可以为一组功能相同的容器提供一个统一的入口，并将请求均衡负载发送到后端的各个容器上
+
+- 通过 `Label Selector` ，实现 SVC 与容器组关联
+- 负载均衡算法默认使用 RR （Round-Robin 轮询调度）
+- 亲和性：通过`service.spec.sessionAffinity = ClientIP` 来启用 `SessionAffinity` 策略
+- 只提供 4 层负载均衡能力 (基于 `IP:PORT` 转发)，没有7层功能 (通过主机名或域名负载均衡)
+
+![kube-proxy](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-svc-kube-proxy.png)
+
+# 2. 代理模式
+
+`kube-proxy` 进程：负责为 Service 实现一种 VIP（虚拟IP）的形式，代理模式有如下三种：
+
+- userspace
+- iptables
+- ipvs
+
+- Ingress: 支持 7 层服务
+
+为什么不使用 round-robin DNS?  dns 存在缓存，当有Pod节点故障时，无法自动处理
+
+
+
+## 2.1 userspace
+
+流量路径：
+
+1. 经过防火墙 iptables
+2. 经过 `kube-proxy` 转发
+3. 到达 pod
+
+缺点：`kube-proxy` 压力很大
+
+![userspace](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-proxy-userspace.png)
+
+## 2.2 iptables
+
+流量路径：
+
+1. 经过 iptables 直接转发
+2. 达到 pod
+
+![userspace](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-proxy-iptables.png)
+
+## 2.3 ipvs
+
+流量路径：
+
+1. 经过 ipvs 直接转发
+2. 达到 pod
+
+![ipvs](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-proxy-ipvs.png)
+
+kube-proxy 监控 Service 和 Endpoints，调用 netlink 接口以相应地创建 ipvs 规则，并定期与 Service 和 Endpoints 对象同步 ipvs 规则，以确保 ipvs 状态与期望一致。访问服务时，流量将被重定向到其中一个后端 Pod
+
+与 iptables 类似，ipvs 于 netfilter 的 hook 功能，但使用hash表作为底层数据结构并在内核空间中工作。这意味着 ipvs 可以快速地重定向流量，并且在同步代理规则时具有更好的性能。
+
+
+
+# 3. Service 类型
+
+## 3.1 ClusterIP
+
+默认类型，自动分配一个仅 Cluster 内部可以访问的虚拟IP。在每个 node 节点使用 iptables，将发向 ClusterIP 的流量转发至 kube-proxy，然后 kube-proxy 自己内部实现负载均衡算法，查询到该 Service 下对应 Pod 的地址和端口，进而将数据转发给对应的 Pod
+
+![clusterip](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-svc-clusterip.png)
+
+工作原理：
+
+- apiserver: 用户通过 kubectl 向 apiserver 下发创建 service 的命令，apiserver 接收到请求后，将数据存储到 etcd 中
+- kube-proxy: 该进程负载监控 Service 和 Pod 的变化 (etcd)，并将变化信息更新到本地 iptables中
+- iptables: 使用NAT 等技术，将 VIP 的流量转发至 Endpoint 中  
+
+
+
+## 3.2 NodePort
+
+在每个节点上暴露一个相同的端口，外部可以通过 IP:PORT 方式访问集群服务
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-svc-nodeport.png)
+
+
+
+## 3.3 LoadBalancer
+
+在 NodePort 基础上，借助 Cloud Provider 创建一个外部负载均衡器，并将请求转发到 `<NodeIp>:<NodePort>`
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-svc-loadbalancer.png)
+
+
+
+## 3.4 ExternalName
+
+通过返回具有该名称的 CNAME 记录，将集群外部的服务引入集群内部使用
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-svc-externalname.png)
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ext-name-svc
+spec:
+  type: ExternalName
+  externalName: hub.docker.com
+```
+
+
+
+```bash
+$ kubectl get svc
+NAME                 TYPE           CLUSTER-IP       EXTERNAL-IP    PORT(S)        AGE
+external-name-svc    ExternalName   <none>          hub.docker.com   <none>         7s
+
+# 获取 DNS 地址信息
+$ kubectl get pod -n kube-system -o wide | grep dns
+coredns-7c6c659fcf-fk7ql   1/1     Running   0          29m    10.244.2.2       k8s-master   <none>           <none>
+
+# 解析域名 i 记录
+$ dig @10.244.2.2 -t A external-name-svc.default.svc.cluster.local. 
+;; ANSWER SECTION:
+external-name-svc.default.svc.cluster.local. 5 IN CNAME hub.docker.com.
+hub.docker.com.         5       IN      CNAME   elb-default.us-east-1.aws.dckr.io.
+elb-default.us-east-1.aws.dckr.io. 5 IN CNAME   us-east-1-elbdefau-1nlhaqqbnj2z8-140214243.us-east-1.elb.amazonaws.com.
+us-east-1-elbdefau-1nlhaqqbnj2z8-140214243.us-east-1.elb.amazonaws.com. 5 IN A 3.211.28.26
+us-east-1-elbdefau-1nlhaqqbnj2z8-140214243.us-east-1.elb.amazonaws.com. 5 IN A 3.217.79.149
+us-east-1-elbdefau-1nlhaqqbnj2z8-140214243.us-east-1.elb.amazonaws.com. 5 IN A 54.147.41.176
+
+;; Query time: 283 msec
+;; SERVER: 10.244.2.2#53(10.244.2.2)
+;; WHEN: Mon Nov 08 20:21:05 CST 2021
+;; MSG SIZE  rcvd: 591
+```
+
+
+
+## 3.5 总结
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-svc-summary.png)
+
+
+
+
+
+# 4. iptables 模式
+
+- `KUBE-SERVICES`: **the entry point for service packets**, to match the destination `IP:Port` and dispatch the packet to the corresponding `KUBE-SVC-*` chain.
+- `KUBE-SVC-*`: **acts as a load balancer**, which distributes the packet to `KUBE-SEP-*` chain. The number of `KUBE-SEP-*` is equlal to the number of endpoints behind the service. Which `KUBE-SEP-*` to be choosen is determined randomly.
+- `KUBE-SEP-*`: **represents a Service EndPoint**. It simply does DNAT, replacing service `IP:Port` with pod's endpoint `IP:port`
+- `KUBE-MARK-MASQ`: adds **a Netfilter mark to packets destined for the service which originate outside the cluster's network**. Packets with this mark will be altered in a POSTROUTING rule to use source network address translation (SNAT) with the node's IP address as their source IP address.
+- `KUBE-MARK-DROP`: adds a Netfilter mark to packets which do not have destination NAT enabled by this point. These packets will be discarded in `KUBE-FIREWAll` chain.
+- `KUBE-FW-*`: acts while service is deployed with type LoadBalancer, it matches the destination IP with servcie's loadbalancer IP and distributes the packet to the corresponding `KUBE-SVC-*` chain (externalTrafficPolicy: Cluster) or `KUBE-XLB-*` chain (externalTrafficPolicy: Local)
+- `KUBE-NODEPORTS`: acts while service is deployed in the type of NodePort. With it the external sources can access the service by the node port. it matches the node port and distributes the packet to the corresponding `KUBE-SVC-*` chain(externalTrafficPolicy: Cluster) or `KUBE-XLB-*` chain (externalTrafficPolicy: Local)
+- `KUBE-XLB-*`: works while externalTrafficPolicy is set to Local.
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/kube-proxy-iptables.png)
+
+
+
+## 4.1 ClusterIP
+
+先创建应用：
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: nginx
+  name: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - image: nginx
+        name: nginx
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - nginx
+            topologyKey: "kubernetes.io/hostname"
+```
+
+
+
+### 4.1.1 normal service
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 80
+```
+
+
+
+**service 和 endpoints 信息**：
+
+```bash
+$ kubectl get svc nginx
+NAME    TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+nginx   ClusterIP   10.97.149.174   <none>        8080/TCP   89s
+
+$ kubectl get ep nginx
+NAME    ENDPOINTS                                   AGE
+nginx   10.244.0.2:80,10.244.1.2:80,10.244.2.2:80   99s
+```
+
+
+
+**DNS 信息**：
+
+```bash
+$ kubectl run dns -it --rm --image=e2eteam/dnsutils:1.1 -- /bin/sh
+/ # nslookup nginx
+Server:         10.96.0.10
+Address:        10.96.0.10#53
+
+Name:   nginx.default.svc.cluster.local
+Address: 10.97.149.174
+
+/ # dig @10.96.0.10 nginx +search +short
+10.97.149.174
+```
+
+
+
+**iptables chains**:
+
+```bash
+# KUBE-SERVICES 规则 -t,--table; -S,--list-rules
+$ iptables -t nat -S | grep KUBE-SERVICES
+-N KUBE-SERVICES
+-A PREROUTING -m comment --comment "kubernetes service portals" -j KUBE-SERVICES
+-A OUTPUT -m comment --comment "kubernetes service portals" -j KUBE-SERVICES
+...
+
+# -L,--list
+$ iptables -t nat -L KUBE-SERVICES | grep nginx
+KUBE-MARK-MASQ  tcp  -- !10.244.0.0/16        10.97.149.174        /* default/nginx:http cluster IP */ tcp dpt:http-alt
+KUBE-SVC-P4Q3KNUAWJVP4ILH  tcp  --  anywhere             10.97.149.174        /* default/nginx:http cluster IP */ tcp dpt:http-alt
+
+# 转发规则
+$ iptables -t nat -L KUBE-SVC-P4Q3KNUAWJVP4ILH
+Chain KUBE-SVC-P4Q3KNUAWJVP4ILH (1 references)
+target     prot opt source               destination
+KUBE-SEP-27XHOTQUGDDAZKCC  all  --  anywhere             anywhere             /* default/nginx:http */ statistic mode random probability 0.33333333349
+KUBE-SEP-HNEN5KDVUKX4WY7U  all  --  anywhere             anywhere             /* default/nginx:http */ statistic mode random probability 0.50000000000
+KUBE-SEP-RFZMCNGOXQ6LCRZG  all  --  anywhere             anywhere             /* default/nginx:http */
+
+# endpoints 详情
+$ iptables -t nat -L KUBE-SEP-27XHOTQUGDDAZKCC
+Chain KUBE-SEP-27XHOTQUGDDAZKCC (1 references)
+target     prot opt source               destination
+KUBE-MARK-MASQ  all  --  10.244.0.2           anywhere             /* default/nginx:http */
+DNAT       tcp  --  anywhere             anywhere             /* default/nginx:http */ tcp to:10.244.0.2:80
+
+$ iptables -t nat -L KUBE-SEP-HNEN5KDVUKX4WY7U
+Chain KUBE-SEP-HNEN5KDVUKX4WY7U (1 references)
+target     prot opt source               destination
+KUBE-MARK-MASQ  all  --  10.244.1.2           anywhere             /* default/nginx:http */
+DNAT       tcp  --  anywhere             anywhere             /* default/nginx:http */ tcp to:10.244.1.2:80
+
+$ iptables -t nat -L KUBE-SEP-RFZMCNGOXQ6LCRZG
+Chain KUBE-SEP-RFZMCNGOXQ6LCRZG (1 references)
+target     prot opt source               destination
+KUBE-MARK-MASQ  all  --  10.244.2.2           anywhere             /* default/nginx:http */
+DNAT       tcp  --  anywhere             anywhere             /* default/nginx:http */ tcp to:10.244.2.2:80
+```
+
+
+
+**链路流程：**
+
+1. `KUBE-SERVICES`: 入站流量入口
+2. `KUBE-MARK-MASQ`: 地址伪装
+3. `KUBE-SVC-*`: 负载均衡
+4. `KUBE-SEP-*`: 流量nat转发和路由到Pod
+
+```bash
+# 通过 NodeIP 访问SVC，追踪链路
+$ curl --interface 192.168.80.100 -s 10.97.149.174:8080    # 连续执行3次
+
+$ conntrack -L -d 10.97.149.174
+conntrack -L -d 10.97.149.174
+tcp      6 105 TIME_WAIT src=192.168.80.100 dst=10.97.149.174 sport=44693 dport=8080 src=10.244.1.2 dst=192.168.80.100 sport=80 dport=16098 [ASSURED] mark=0 use=1
+tcp      6 104 TIME_WAIT src=192.168.80.100 dst=10.97.149.174 sport=58549 dport=8080 src=10.244.0.2 dst=10.244.0.1 sport=80 dport=42505 [ASSURED] mark=0 use=1
+tcp      6 103 TIME_WAIT src=192.168.80.100 dst=10.97.149.174 sport=50383 dport=8080 src=10.244.2.2 dst=192.168.80.100 sport=80 dport=61043 [ASSURED] mark=0 use=1
+conntrack v1.4.5 (conntrack-tools): 3 flow entries have been shown.
+```
+
+
+
+### 4.1.2 session affinity service
+
+session affinity makes sure that requests **from the same particular client are passed to the same backend server**.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-session
+spec:
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 80
+```
+
+
+
+**service 和 endpoints 信息**：
+
+```bash
+$ kubectl get svc nginx-session
+NAME            TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+nginx-session   ClusterIP   10.100.212.172   <none>        8080/TCP   44s
+
+$ kubectl get ep nginx-session
+NAME            ENDPOINTS                                   AGE
+nginx-session   10.244.0.2:80,10.244.1.2:80,10.244.2.2:80   48s
+```
+
+
+
+**iptables chains**:
+
+```bash
+# KUBE-SERVICES 规则 -t,--table; -S,--list-rules
+$ iptables -t nat -S | grep KUBE-SERVICES
+-N KUBE-SERVICES
+-A PREROUTING -m comment --comment "kubernetes service portals" -j KUBE-SERVICES
+-A OUTPUT -m comment --comment "kubernetes service portals" -j KUBE-SERVICES
+...
+
+# -L,--list
+$ iptables -t nat -L KUBE-SERVICES | grep nginx-session
+KUBE-MARK-MASQ  tcp  -- !10.244.0.0/16        10.100.212.172       /* default/nginx-session:http cluster IP */ tcp dpt:http-alt
+KUBE-SVC-MTFFMCSYASKCNAP6  tcp  --  anywhere             10.100.212.172       /* default/nginx-session:http cluster IP */ tcp dpt:http-alt
+
+# 转发规则
+$ iptables -t nat -L KUBE-SVC-MTFFMCSYASKCNAP6
+Chain KUBE-SVC-MTFFMCSYASKCNAP6 (1 references)
+target     prot opt source               destination
+KUBE-SEP-BAWWLWA2KFJFFCXL  all  --  anywhere             anywhere             /* default/nginx-session:http */ recent: CHECK seconds: 10800 reap name: KUBE-SEP-BAWWLWA2KFJFFCXL side: source mask: 255.255.255.255
+KUBE-SEP-VH7SPBBKIBROP4TI  all  --  anywhere             anywhere             /* default/nginx-session:http */ recent: CHECK seconds: 10800 reap name: KUBE-SEP-VH7SPBBKIBROP4TI side: source mask: 255.255.255.255
+KUBE-SEP-N5UOFT7DDYELER4V  all  --  anywhere             anywhere             /* default/nginx-session:http */ recent: CHECK seconds: 10800 reap name: KUBE-SEP-N5UOFT7DDYELER4V side: source mask: 255.255.255.255
+KUBE-SEP-BAWWLWA2KFJFFCXL  all  --  anywhere             anywhere             /* default/nginx-session:http */ statistic mode random probability 0.33333333349
+KUBE-SEP-VH7SPBBKIBROP4TI  all  --  anywhere             anywhere             /* default/nginx-session:http */ statistic mode random probability 0.50000000000
+KUBE-SEP-N5UOFT7DDYELER4V  all  --  anywhere             anywhere             /* default/nginx-session:http */
+
+# endpoints 详情
+$ iptables -t nat -L KUBE-SEP-BAWWLWA2KFJFFCXL
+Chain KUBE-SEP-BAWWLWA2KFJFFCXL (2 references)
+target     prot opt source               destination
+KUBE-MARK-MASQ  all  --  10.244.0.2           anywhere             /* default/nginx-session:http */
+DNAT       tcp  --  anywhere             anywhere             /* default/nginx-session:http */ recent: SET name: KUBE-SEP-BAWWLWA2KFJFFCXL side: source mask: 255.255.255.255 tcp to:10.244.0.2:80
+
+$ iptables -t nat -L KUBE-SEP-VH7SPBBKIBROP4TI
+Chain KUBE-SEP-VH7SPBBKIBROP4TI (2 references)
+target     prot opt source               destination
+KUBE-MARK-MASQ  all  --  10.244.1.2           anywhere             /* default/nginx-session:http */
+DNAT       tcp  --  anywhere             anywhere             /* default/nginx-session:http */ recent: SET name: KUBE-SEP-VH7SPBBKIBROP4TI side: source mask: 255.255.255.255 tcp to:10.244.1.2:80
+
+$ iptables -t nat -L KUBE-SEP-N5UOFT7DDYELER4V
+Chain KUBE-SEP-N5UOFT7DDYELER4V (2 references)
+target     prot opt source               destination
+KUBE-MARK-MASQ  all  --  10.244.2.2           anywhere             /* default/nginx-session:http */
+DNAT       tcp  --  anywhere             anywhere             /* default/nginx-session:http */ recent: SET name: KUBE-SEP-N5UOFT7DDYELER4V side: source mask: 255.255.255.255 tcp to:10.244.2.2:80
+```
+
+
+
+**链路始终指向同一个endpoint：**
+
+```bash
+# 通过 NodeIP 访问SVC，追踪链路
+$ curl --interface 192.168.80.100 -s 10.100.212.172:8080    # 连续执行3次
+
+# 链路始终指向同一个
+$ conntrack -L -d 10.100.212.172
+tcp      6 101 TIME_WAIT src=192.168.80.100 dst=10.100.212.172 sport=35011 dport=8080 src=10.244.2.2 dst=192.168.80.100 sport=80 dport=36528 [ASSURED] mark=0 use=1
+tcp      6 99 TIME_WAIT src=192.168.80.100 dst=10.100.212.172 sport=33863 dport=8080 src=10.244.2.2 dst=192.168.80.100 sport=80 dport=56278 [ASSURED] mark=0 use=1
+tcp      6 100 TIME_WAIT src=192.168.80.100 dst=10.100.212.172 sport=55821 dport=8080 src=10.244.2.2 dst=192.168.80.100 sport=80 dport=6219 [ASSURED] mark=0 use=1
+conntrack v1.4.5 (conntrack-tools): 3 flow entries have been shown.
+```
+
+
+
+### 4.1.3 external ip service
+
+If there are external IPs that route to one or more cluster nodes, Kubernetes Services can be exposed on those externalIPs. **Traffic that ingresses into the cluster with the external IP (as destination IP), on the Service port, will be routed to one of the Service endpoints.**
+
+使用k8s-master的节点IP做为 external-ip，该服务只能通过主节点IP来访问
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-extip
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 80
+  externalIPs:
+  - 192.168.80.100
+```
+
+
+
+**service 和 endpoints 信息**：
+
+```bash
+$ kubectl get svc nginx-extip
+NAME          TYPE        CLUSTER-IP     EXTERNAL-IP      PORT(S)    AGE
+nginx-extip   ClusterIP   10.108.231.6   192.168.80.100   8080/TCP   49s
+
+$ kubectl get ep nginx-extip
+NAME          ENDPOINTS                                   AGE
+nginx-extip   10.244.0.2:80,10.244.1.2:80,10.244.2.2:80   70s
+```
+
+
+
+**iptables chains**:
+
+```bash
+# -L,--list
+$ iptables -t nat -L KUBE-SERVICES | grep nginx-extip
+KUBE-MARK-MASQ  tcp  -- !10.244.0.0/16        10.108.231.6         /* default/nginx-extip:http cluster IP */ tcp dpt:http-alt
+KUBE-SVC-UEEGYADY2EPR2RRO  tcp  --  anywhere             10.108.231.6         /* default/nginx-extip:http cluster IP */ tcp dpt:http-alt
+KUBE-MARK-MASQ  tcp  -- !10.244.0.0/16        k8s-master           /* default/nginx-extip:http external IP */ tcp dpt:http-alt
+KUBE-SVC-UEEGYADY2EPR2RRO  tcp  --  anywhere             k8s-master           /* default/nginx-extip:http external IP */ tcp dpt:http-alt
+
+# 转发规则
+$ iptables -t nat -L KUBE-SVC-UEEGYADY2EPR2RRO
+Chain KUBE-SVC-UEEGYADY2EPR2RRO (2 references)
+target     prot opt source               destination
+KUBE-SEP-ISW4Y3DNNZIJVHHK  all  --  anywhere             anywhere             /* default/nginx-extip:http */ statistic mode random probability 0.33333333349
+KUBE-SEP-EHZYZHTCGWGF7QLG  all  --  anywhere             anywhere             /* default/nginx-extip:http */ statistic mode random probability 0.50000000000
+KUBE-SEP-6GQNQWOFMDZVEYH6  all  --  anywhere             anywhere             /* default/nginx-extip:http */
+
+# endpoints 详情
+$ iptables -t nat -L KUBE-SEP-ISW4Y3DNNZIJVHHK
+Chain KUBE-SEP-ISW4Y3DNNZIJVHHK (1 references)
+target     prot opt source               destination
+KUBE-MARK-MASQ  all  --  10.244.0.2           anywhere             /* default/nginx-extip:http */
+DNAT       tcp  --  anywhere             anywhere             /* default/nginx-extip:http */ tcp to:10.244.0.2:80
+
+$ iptables -t nat -L KUBE-SEP-EHZYZHTCGWGF7QLG
+Chain KUBE-SEP-EHZYZHTCGWGF7QLG (1 references)
+target     prot opt source               destination
+KUBE-MARK-MASQ  all  --  10.244.1.2           anywhere             /* default/nginx-extip:http */
+DNAT       tcp  --  anywhere             anywhere             /* default/nginx-extip:http */ tcp to:10.244.1.2:80
+
+$ iptables -t nat -L KUBE-SEP-6GQNQWOFMDZVEYH6
+Chain KUBE-SEP-6GQNQWOFMDZVEYH6 (1 references)
+target     prot opt source               destination
+KUBE-MARK-MASQ  all  --  10.244.2.2           anywhere             /* default/nginx-extip:http */
+DNAT       tcp  --  anywhere             anywhere             /* default/nginx-extip:http */ tcp to:10.244.2.2:80
+```
+
+
+
+**可直接通过主节点IP访问**：
+
+```bash
+# 主节点，正常访问
+$ curl 192.168.80.100:8080  
+
+# 其他节点上，无法正常访问
+$ curl 192.168.80.101:8080
+curl: (7) Failed to connect to 192.168.80.101 port 8080: Connection refused
+```
+
+
+
+### 4.1.4 headless service
+
+**Sometimes you don’t need load-balancing and a single Service IP. In this case, you can create what are termed “headless” Services**
+
+当不需要负载均衡和独立 Service IP 时，可以指定 `spec.clusterIP` 为 None来创建 Headless Service。这类 Service 并不会分配 Cluster IP，kube-proxy 也不会处理它们，而且平台也不会其对进行负载均衡和路由。虽然没有svc，但依旧可以通过访问域名，路由到不同Pod上。
+
+**本质上：headless 是一种基于 "域名/DNS" 的访问，而非 iptables**
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-svc-headless.png)
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-headless
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector: 
+    app: nginx
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 80
+```
+
+
+
+**service 和 endpoints 信息**：
+
+```bash
+$ kubectl get svc nginx-headless
+NAME             TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)    AGE
+nginx-headless   ClusterIP   None         <none>        8080/TCP   19s
+
+$ kubectl get ep nginx-headless
+NAME             ENDPOINTS                                   AGE
+nginx-headless   10.244.0.2:80,10.244.1.2:80,10.244.2.2:80   24s
+```
+
+
+
+**DNS 信息**：
+
+```bash
+$ kubectl run dns -it --rm --image=e2eteam/dnsutils:1.1 -- /bin/sh
+/ # nslookup nginx-headless
+Server:         10.96.0.10
+Address:        10.96.0.10#53
+
+Name:   nginx-headless.default.svc.cluster.local
+Address: 10.244.1.2
+Name:   nginx-headless.default.svc.cluster.local
+Address: 10.244.2.2
+Name:   nginx-headless.default.svc.cluster.local
+Address: 10.244.0.2
+
+/ # dig @10.96.0.10 nginx-headless +search +short
+10.244.1.2
+10.244.0.2
+10.244.2.2
+
+# A 记录
+/ # dig -t A nginx-headless.default.svc.cluster.local. @10.96.0.10
+; <<>> DiG 9.11.6-P1 <<>> -t A nginx-headless.default.svc.cluster.local. @10.96.0.10
+;; global options: +cmd
+;; Got answer:
+;; WARNING: .local is reserved for Multicast DNS
+;; You are currently testing what happens when an mDNS query is leaked to DNS
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 39957
+;; flags: qr aa rd; QUERY: 1, ANSWER: 3, AUTHORITY: 0, ADDITIONAL: 1
+;; WARNING: recursion requested but not available
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+; COOKIE: d1fc31a1b43b4eb1 (echoed)
+;; QUESTION SECTION:
+;nginx-headless.default.svc.cluster.local. IN A
+
+;; ANSWER SECTION:
+nginx-headless.default.svc.cluster.local. 30 IN A 10.244.0.2
+nginx-headless.default.svc.cluster.local. 30 IN A 10.244.1.2
+nginx-headless.default.svc.cluster.local. 30 IN A 10.244.2.2
+
+;; Query time: 18 msec
+;; SERVER: 10.96.0.10#53(10.96.0.10)
+;; WHEN: Tue Feb 15 02:54:09 UTC 2022
+;; MSG SIZE  rcvd: 249
+```
+
+
+
+**iptables chains**:
+
+```bash
+# 无相关记录
+$ iptables -t nat -L KUBE-SERVICES | grep nginx-headless
+```
+
+
+
+## 4.2 NodePort
+
+`externalTrafficPolicy` 两种外部流量策略：
+
+- Cluster：默认，所有节点上，均开启DNAT访问
+
+  - packets sent to the service with type=NodePort or type=LoadBalance are SNAT’d by the node’s IP.
+  - if external packet is routed to a node which has no pod retained, the proxy will forward it to a pod on another host. This may cause an extra hop, which is bad.
+  - kubernetes performs the balancing within the cluster, which means the number of pods is taken into account when do the balancing, so it has a good overall load-spreading.
+
+  ![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-svc-externalTrafficPolicy-cluster.png)
+
+- Local: 只在Pod所在节点上，开启访问
+
+  - only available on NodePort and LoadBalancer service.
+  - packets are not SNAT’d for either inter-cluster or external traffic.
+  - when the packet comes to a no-pod-retain node, it gets dropped, which avoids the extra hop between nodes.
+  - kubernetes performs the balancing within the node, which means the proxy only distributes the load to the pods on the on-site node. it is up to the external balancer to solve the imbalance problem.
+
+  ![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/k8s-svc-externalTrafficPolicy-local.png)
+
+
+
+先创建应用：
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: nginx
+  name: nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - image: nginx
+        name: nginx
+```
+
+
+
+### 4.2.1 cluster (默认)
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-np
+spec:
+  type: NodePort
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    nodePort: 30080
+```
+
+
+
+**service 和 endpoints 信息**：
+
+```bash
+$ kubectl get svc nginx-np
+NAME       TYPE       CLUSTER-IP      EXTERNAL-IP   PORT(S)        AGE
+nginx-np   NodePort   10.107.15.112   <none>        80:30080/TCP   8s
+
+$ kubectl get ep nginx-np
+NAME       ENDPOINTS                     AGE
+nginx-np   10.244.1.7:80,10.244.1.8:80   12s
+```
+
+
+
+**本地端口详情**：
+
+```bash
+$ lsof -i :30080
+COMMAND      PID USER   FD   TYPE  DEVICE SIZE/OFF NODE NAME
+kube-prox 110511 root   10u  IPv4 2080094      0t0  TCP *:30080 (LISTEN)
+
+$ ps -p 110511 -o args
+COMMAND
+/usr/local/bin/kube-proxy --config=/var/lib/kube-proxy/config.conf --hostname-override=k8s-master
+```
+
+
+
+**iptables chains**:
+
+```bash
+# cluster-ip 规则
+$ iptables -t nat -L KUBE-SERVICES | grep nginx-np
+KUBE-MARK-MASQ  tcp  -- !10.244.0.0/16        10.107.15.112        /* default/nginx-np:http cluster IP */ tcp dpt:http
+KUBE-SVC-ECKZVSEVR2BJV3CN  tcp  --  anywhere             10.107.15.112        /* default/nginx-np:http cluster IP */ tcp dpt:http
+
+# node-port 规则
+$ iptables -t nat -L KUBE-NODEPORTS | grep nginx-np
+KUBE-MARK-MASQ  tcp  --  anywhere             anywhere             /* default/nginx-np:http */ tcp dpt:30080
+KUBE-SVC-ECKZVSEVR2BJV3CN  tcp  --  anywhere             anywhere             /* default/nginx-np:http */ tcp dpt:30080
+
+# 转发规则
+$ iptables -t nat -L KUBE-SVC-ECKZVSEVR2BJV3CN
+KUBE-MARK-MASQ  tcp  -- !10.244.0.0/16        10.107.15.112        /* default/nginx-np:http cluster IP */ tcp dpt:http
+KUBE-SVC-ECKZVSEVR2BJV3CN  tcp  --  anywhere             10.107.15.112        /* default/nginx-np:http cluster IP */ tcp dpt:http
+
+$ iptables -t nat -L KUBE-SVC-ECKZVSEVR2BJV3CN
+Chain KUBE-SVC-ECKZVSEVR2BJV3CN (2 references)
+target     prot opt source               destination
+KUBE-SEP-GF2FYTSFLSFTNTWU  all  --  anywhere             anywhere             /* default/nginx-np:http */ statistic mode random probability 0.50000000000
+KUBE-SEP-5ORCLRUL2QF7AHL5  all  --  anywhere             anywhere             /* default/nginx-np:http */
+```
+
+
+
+### 4.2.2 local
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-np-local
+spec:
+  type: NodePort
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    nodePort: 30080
+  externalTrafficPolicy: Local
+```
+
+
+
+**service 和 endpoints 信息**：
+
+```bash
+$ kubectl get svc nginx-np-local
+NAME             TYPE       CLUSTER-IP     EXTERNAL-IP   PORT(S)        AGE
+nginx-np-local   NodePort   10.109.138.5   <none>        80:30080/TCP   10s
+
+$ kubectl get ep nginx-np-local
+NAME             ENDPOINTS                     AGE
+nginx-np-local   10.244.1.7:80,10.244.1.8:80   16s
+```
+
+
+
+**iptables chains**:
+
+```bash
+# 应用均运行在节点 k8s-node01 上
+$ kubectl get pod -l app=nginx -o wide
+NAME                     READY   STATUS    RESTARTS   AGE    IP           NODE         NOMINATED NODE   READINESS GATES
+nginx-6799fc88d8-jbhjf   1/1     Running   0          107m   10.244.1.8   k8s-node01   <none>           <none>
+nginx-6799fc88d8-swn5x   1/1     Running   0          107m   10.244.1.7   k8s-node01   <none>           <none>
+
+$ iptables -t nat -L KUBE-NODEPORTS
+Chain KUBE-NODEPORTS (1 references)
+target     prot opt source               destination
+KUBE-MARK-MASQ  tcp  --  localhost/8          anywhere             /* default/nginx-np-local:http */ tcp dpt:30080
+KUBE-XLB-ZHY4VQWGMMCQVISC  tcp  --  anywhere             anywhere             /* default/nginx-np-local:http */ tcp dpt:30080
+
+# 节点 k8s-node01 上，新增了KUBE-SEP-VWPVMO4RHBNR4CXU 和 KUBE-SEP-G3WGVK6TCMEOHMAR 转发规则
+$ iptables -t nat -L KUBE-XLB-ZHY4VQWGMMCQVISC
+Chain KUBE-XLB-ZHY4VQWGMMCQVISC (1 references)
+target     prot opt source               destination
+KUBE-SVC-ZHY4VQWGMMCQVISC  all  --  10.244.0.0/16        anywhere             /* Redirect pods trying to reach external loadbalancer VIP to clusterIP */
+KUBE-MARK-MASQ  all  --  anywhere             anywhere             /* masquerade LOCAL traffic for default/nginx-np-local:http LB IP */ ADDRTYPE match src-type LOCAL
+KUBE-SVC-ZHY4VQWGMMCQVISC  all  --  anywhere             anywhere             /* route LOCAL traffic for default/nginx-np-local:http LB IP to service chain */ ADDRTYPE match src-type LOCAL
+KUBE-SEP-VWPVMO4RHBNR4CXU  all  --  anywhere             anywhere             /* Balancing rule 0 for default/nginx-np-local:http */ statistic mode random probability 0.50000000000
+KUBE-SEP-G3WGVK6TCMEOHMAR  all  --  anywhere             anywhere             /* Balancing rule 1 for default/nginx-np-local:http */
+
+# 其他节点上， KUBE-MARK-DROP
+$ iptables -t nat -L KUBE-XLB-ZHY4VQWGMMCQVISC
+Chain KUBE-XLB-ZHY4VQWGMMCQVISC (1 references)
+target     prot opt source               destination
+KUBE-SVC-ZHY4VQWGMMCQVISC  all  --  10.244.0.0/16        anywhere             /* Redirect pods trying to reach external loadbalancer VIP to clusterIP */
+KUBE-MARK-MASQ  all  --  anywhere             anywhere             /* masquerade LOCAL traffic for default/nginx-np-local:http LB IP */ ADDRTYPE match src-type LOCAL
+KUBE-SVC-ZHY4VQWGMMCQVISC  all  --  anywhere             anywhere             /* route LOCAL traffic for default/nginx-np-local:http LB IP to service chain */ ADDRTYPE match src-type LOCAL
+KUBE-MARK-DROP  all  --  anywhere             anywhere             /* default/nginx-np-local:http has no local endpoints */
+
+# 实际访问
+$ curl 192.168.80.100:30080  # Timout
+$ curl 192.168.80.101:30080  # OK
+```
+
+
+
+**链路流程：**
+
+1. `KUBE-NODEPORTS`: 入站流量入口
+2. `KUBE-MARK-MASQ`: 地址伪装
+3. `KUBE-XLB-*`: 外部LB控制
+4. `KUBE-SVC-*`: 负载均衡
+5. `KUBE-MARK-DROP`: 丢弃不符合的流量包
+6. `KUBE-SEP-*`: 流量nat转发和路由到Pod
+
+
+
+# 5. IPVS 模式
+
+启用ipvs模式：
+
+```bash
+$ kubectl edit cm kube-proxy -n kube-system
+   mode: "ipvs"
+   
+# 重启 kube-proxy
+$ kubectl delete pod kube-proxy-kk99k  kube-proxy-mtvhd   kube-proxy-tfwtv -n kube-system 
+
+# 检查日志
+$ kubectl logs  kube-proxy-6q89l -n kube-system
+...
+I0215 06:01:41.180881       1 server_others.go:274] Using ipvs Proxier.
+```
+
+
+
+## 5.1 ClusterIP
+
+### 4.1.1 normal service
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 80
+```
+
+
+
+```bash
+$ kubectl get svc nginx
+NAME    TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+nginx   ClusterIP   10.110.148.45   <none>        8080/TCP   3m6s
+
+$ kubectl get ep nginx
+NAME    ENDPOINTS                     AGE
+nginx   10.244.1.7:80,10.244.1.8:80   3m10s
+
+$ ipvsadm -Ln | grep 10.110.148.45 -A 2
+TCP  10.110.148.45:8080 rr
+  -> 10.244.1.7:80                Masq    1      0          0
+  -> 10.244.1.8:80                Masq    1      0          0
+```
+
+
+
+### 4.1.2 session affinity service
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-session
+spec:
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 80
+```
+
+
+
+```bash
+$ kubectl get svc nginx-session
+NAME            TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+nginx-session   ClusterIP   10.103.193.204   <none>        8080/TCP   7s
+
+$ kubectl get ep nginx-session
+NAME            ENDPOINTS                     AGE
+nginx-session   10.244.0.4:80,10.244.0.5:80   11s
+
+$ ipvsadm -Ln | grep 10.103.193.204 -A 2
+TCP  10.103.193.204:8080 rr persistent 10800
+  -> 10.244.0.4:80                Masq    1      0          0
+  -> 10.244.0.5:80                Masq    1      0          0
+```
+
+
+
+### 4.1.3 external ip service
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-extip
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 80
+  externalIPs:
+  - 192.168.80.100
+```
+
+
+
+```bash
+$ kubectl get svc nginx-extip
+NAME          TYPE        CLUSTER-IP      EXTERNAL-IP      PORT(S)    AGE
+nginx-extip   ClusterIP   10.111.142.81   192.168.80.100   8080/TCP   8s
+
+$ kubectl get ep nginx-extip
+NAME          ENDPOINTS                     AGE
+nginx-extip   10.244.0.4:80,10.244.0.5:80   12s
+
+$ ipvsadm -Ln | grep ':8080' -A 2
+TCP  192.168.80.100:8080 rr
+  -> 10.244.0.4:80                Masq    1      0          0
+  -> 10.244.0.5:80                Masq    1      0          0
+--
+TCP  10.111.142.81:8080 rr
+  -> 10.244.0.4:80                Masq    1      0          0
+  -> 10.244.0.5:80                Masq    1      0          0
+```
+
+
+
+## 5.2 NodePort
+
+### 4.2.1 cluster (默认)
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-np
+spec:
+  type: NodePort
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    nodePort: 30080
+```
+
+
+
+**service 和 endpoints 信息**：
+
+```bash
+$ kubectl get svc nginx-np
+NAME       TYPE       CLUSTER-IP     EXTERNAL-IP   PORT(S)        AGE
+nginx-np   NodePort   10.105.4.239   <none>        80:30080/TCP   9s
+
+$ kubectl get ep nginx-np
+NAME       ENDPOINTS                     AGE
+nginx-np   10.244.1.9:80,10.244.2.6:80   13s
+
+$ ipvsadm -Ln | grep :30080 -A 2
+TCP  192.168.70.100:30080 rr
+  -> 10.244.1.9:80                Masq    1      0          0
+  -> 10.244.2.6:80                Masq    1      0          0
+TCP  192.168.80.100:30080 rr
+  -> 10.244.1.9:80                Masq    1      0          0
+  -> 10.244.2.6:80                Masq    1      0          0
+TCP  10.244.0.1:30080 rr
+  -> 10.244.1.9:80                Masq    1      0          0
+  -> 10.244.2.6:80                Masq    1      0          0
+TCP  127.0.0.1:30080 rr
+  -> 10.244.1.9:80                Masq    1      0          0
+  -> 10.244.2.6:80                Masq    1      0          0
+TCP  172.17.0.1:30080 rr
+  -> 10.244.1.9:80                Masq    1      0          0
+  -> 10.244.2.6:80                Masq    1      0          0
+```
+
+
+
+### 4.2.2 local
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-np-local
+spec:
+  type: NodePort
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    nodePort: 30080
+  externalTrafficPolicy: Local
+```
+
+
+
+**service 和 endpoints 信息**：
+
+```bash
+$  kubectl get svc nginx-np-local
+NAME             TYPE       CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
+nginx-np-local   NodePort   10.106.205.122   <none>        80:30080/TCP   14m
+
+$ kubectl get ep nginx-np-local
+NAME             ENDPOINTS                     AGE
+nginx-np-local   10.244.1.9:80,10.244.2.6:80   14m
+
+$ kubectl get pod -l app=nginx -o wide
+NAME                     READY   STATUS    RESTARTS   AGE   IP           NODE         NOMINATED NODE   READINESS GATES
+nginx-6799fc88d8-cm8tw   1/1     Running   0          43s   10.244.1.9   k8s-node01   <none>           <none>
+nginx-6799fc88d8-s6zbb   1/1     Running   0          43s   10.244.2.6   k8s-node02   <none>           <none>
+
+# k8s-master: 无转发规则
+$ ipvsadm -Ln
+TCP  172.17.0.1:30080 rr
+TCP  192.168.70.100:30080 rr
+TCP  192.168.80.100:30080 rr
+TCP  10.244.0.1:30080 rr
+TCP  127.0.0.1:30080 rr
+
+# k8s-node01:
+$ ipvsadm -Ln | grep :30080 -A 1 | grep ':80' -B 1
+TCP  172.17.0.1:30080 rr
+  -> 10.244.1.9:80                Masq    1      0          0
+TCP  192.168.70.101:30080 rr
+  -> 10.244.1.9:80                Masq    1      0          0
+TCP  192.168.80.101:30080 rr
+  -> 10.244.1.9:80                Masq    1      0          0
+TCP  10.244.1.1:30080 rr
+  -> 10.244.1.9:80                Masq    1      0          0
+TCP  127.0.0.1:30080 rr
+  -> 10.244.1.9:80                Masq    1      0          0
+  
+# k8s-node02
+$ ipvsadm -Ln | grep :30080 -A 1 | grep ':80' -B 1
+TCP  10.244.2.1:30080 rr
+  -> 10.244.2.6:80                Masq    1      0          0
+TCP  127.0.0.1:30080 rr
+  -> 10.244.2.6:80                Masq    1      0          0
+TCP  172.17.0.1:30080 rr
+  -> 10.244.2.6:80                Masq    1      0          0
+TCP  192.168.70.102:30080 rr
+  -> 10.244.2.6:80                Masq    1      0          0
+TCP  192.168.80.102:30080 rr
+  -> 10.244.2.6:80                Masq    1      0          0
+```
+
+
+
+# 6. 补充知识点
+
+## 6.1 iptables
+
+### 6.1.1 packet flow
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/network/iptables-packet-flow.png)
+
+
+
+### 6.1.2 NAT
+
+网络地址转换：
+
+- SNAT：*source network address translation*，**基于源地址的地址转换**。内网IP访问外部网络时，路由器会将数据包的报文头中的源地址替换成路由器的ip地址。典型应用：**内网PC访问公网**
+- DNAT：*destination network address translation*，**基于目标的网络地址转换**。外网请求内网资源时，防火墙会将公网的目标地址修改为内网的ip地址。典型应用：**公网访问内网web服务**
+
+**MSAQUERAED**：地址伪装，是 snat 的一种特例，可自动完成 snat
+
+```bash
+# 网段10.8.0.0的数据包SNAT成192.168.5.3 发送
+iptables-t nat -A POSTROUTING -s 10.8.0.0/255.255.255.0 -o eth0 -j SNAT --to-source 192.168.5.3
+
+# 网段10.8.0.0的数据包SNAT成多个IP 192.168.5.3-192.168.5.10 发送
+iptables-t nat -A POSTROUTING -s 10.8.0.0/255.255.255.0 -o eth0 -j SNAT --to-source192.168.5.3-192.168.5.10
+
+# 针对上面IP变化幅度较大，自动获取当前ip地址做 NAT
+iptables-t nat -A POSTROUTING -s 10.8.0.0/255.255.255.0 -o eth0 -j MASQUERADE
+```
+
+
+
+### 6.1.3 iptables 命令
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/network/iptables-command.png)
+
+```bash
+# nat 表规则
+iptables -t nat -L
+
+# 清除NAT表
+iptables -F -t nat ()
+```
+
+
+
+## 6.2 IPVS
+
+### 6.2.1 简介
+
+LVS 主要由两部分组成：
+
+- ipvs：ip virtual server，是工作在内核空间上的一段代码，主要是实现调度的代码，它是实现传输层负载均衡的核心。
+- ipvsadm：工作在用户空间，负责为ipvs内核框架编写规则，用于定义谁是集群服务，谁是后端真实服务器
+
+IPVS 基于 Netfilter， Netfilter 的数据包有五个挂载点Hook Point：PRE_ROUTING、INPUT、OUTPUT、FORWARD、POST_ROUTING。IPVS工作在其中的INPUT链上
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/network/ipvs.png) 
+
+**专有名词**：
+
+- DS：Director Server，指的是前端负载均衡器。
+- RS：Real Server，指的是后端工作的服务器。
+- VIP：Virtual IP，用户请求的目标IP地址。
+- DIP：Director Server IP，前端负载均衡器的IP地址。
+- RIP：Real Server IP，后端服务器的IP地址。
+- CIP：Client IP，访问客户端的IP地址。
+
+
+
+**ipvs 和 iptables区别**：
+
+- 底层数据结构：iptables 使用链表，ipvs 使用哈希表
+- 负载均衡算法：iptables 只支持随机、轮询两种负载均衡算法而 ipvs 支持的多达 8 种；
+- 操作工具：iptables 需要使用 iptables 命令行工作来定义规则，ipvs 需要使用 ipvsadm 来定义规则。
+
+此外 ipvs 还支持 realserver 运行状况检查、连接重试、端口映射、会话保持等功能。
+
+
+
+### 6.2.2 三种工作模式
+
+- NAT: Network Address Translate
+
+  NAT模式下，请求包和响应包都需要经过LB处理。当客户端请求到达虚拟服务后，LB会对请求包做目的地址转换DNAT，将请求包的目的IP改为RS的IP；当收到RS的响应后，LB会对响应做源地址转换SNAT，将响应包的源IP改为LB的IP
+
+- DR: Direct Routing
+
+  DR 模式下，客户端请求包到达LB的虚拟服务IP端口后，LB不会改写请求包的IP和端口，但会改下请求包的MAC地址（源MAC地址是DIP所在接口的MAC，目的MAC是RS所在RIP接口所在的MAC，IP首部不会发生变化），然后将数据包转发；
+
+  数据包送到真实服务器后，判断请求报文的MAC地址是否自己的MAC地址，接收此报文，拆了MAC首部，发现目的地址是VIP后,向`lo:0`转发此报文 (每个RS主机上都有VIP,并且RIP配置在物理接口上,VIP配置在内置接口`lo:0`上), 最终达到用户空间进程.
+
+  真实服务器用户空间进行构建响应报文,将响应报文通过`lo:0`接口传给物理网卡处理请求后,响应包直接回给客户端,不再经过LB
+
+
+- FULLNAT:
+
+  FULLNAT模式,客户端感知不到RS, RS也感知不到客户端, 它们都只能看到LB，LB会对请求包和响应包都做SNAT和DNAT
+
+  
+
+**三种工作模式比较:**
+
+- 转发效率: `DR > NAT > FULLNAT`
+
+- 组网要求:
+
+  - NAT: LB 和 RS 必须在同一个子网, 且客户端不能与LB/RS在同一子网
+  - DR: LB 和 RS 必须同一子网
+  - FULLNAT: 无要求
+
+- 端口映射:
+
+  - NAT: 支持
+  - DR: 不支持
+  - FULLNAT: 不支持
+
+  
+
+### 6.2.3 负载均衡算法
+
+- 轮询（Round Robin）
+
+- 加权轮询（Weighted Round Robin）
+
+- 源地址哈希（Source Hash）
+
+- 目标地址哈希（Destination Hash）
+
+- 最小连接数（Least Connections）
+
+- 加权最小连接数（Weighted Least Connections）
+
+- 最小期望延迟（ Shortest Expection Delay）
+
+
+
+### 6.2.4 开启内核支持
+
+```bash
+# 检查是否已启用，至少存在如下module
+$ lsmod|grep ip_vs
+ip_vs
+ip_vs_rr
+ip_vs_wrr
+ip_vs_sh
+nf_conntrack_ipv4
+
+# 未开启时，获取系统当前的moudle
+$ ls -l /lib/modules/$(uname -r)/kernel/net/netfilter/ipvs|grep -o "^[^.]*"
+
+# 加载module，临时生效
+$ for i in $(ls /lib/modules/$(uname -r)/kernel/net/netfilter/ipvs|grep -o "^[^.]*"); do echo $i; /sbin/modinfo -F filename $i >/dev/null 2>&1 && /sbin/modprobe $i; done
+
+# 永久生效
+$ ls /lib/modules/$(uname -r)/kernel/net/netfilter/ipvs|grep -o "^[^.]*" >> /etc/modules
+
+# 安装管理工具
+apt install ipvsadm ipset -y
+```
+
+
+
+### 6.2.5 kube-proxy
+
+通过参数`--ipvs-scheduler`配置负载均衡算法，默认为轮询（Round Robin）：
+
+- rr: round-robin, 轮训调度
+- lc: least connection, 最小连接数
+- dh: destination hashing, 目标hash
+- sh: source hashing, 源hash
+- sed: shortest expected delay, 最短期望延迟
+- nq: never queue, 不排队调度
+
+
+
+```bash
+# 1. 修改配置
+$ vi /lib/systemd/system/kube-proxy.service
+--proxy-mode=iptables => ipvs
+--masquerade-all=true \
+
+# 2. 重启
+$ systemctl daemon-reload
+$ systemctl restart kube-proxy
+
+# 3. 查询 ipvs 是否成功开启
+$ grep Using /var/log/kubernetes/kube-proxy.INFO
+I1108 16:36:14.378518   15298 server_others.go:274] Using ipvs Proxier.
+
+# 4. dummy interface
+$ ip addr
+3: kube-ipvs0: <BROADCAST,NOARP> mtu 1500 qdisc noop state DOWN group default
+    link/ether c6:14:f7:ad:b6:c8 brd ff:ff:ff:ff:ff:ff
+    inet 10.96.92.170/32 scope global kube-ipvs0
+       valid_lft forever preferred_lft forever
+    inet 10.96.0.1/32 scope global kube-ipvs0
+       valid_lft forever preferred_lft forever
+
+# 状态为 down, 不进行网络包接收和发送
+$ ip link
+3: kube-ipvs0: <BROADCAST,NOARP> mtu 1500 qdisc noop state DOWN mode DEFAULT group default
+    link/ether c6:14:f7:ad:b6:c8 brd ff:ff:ff:ff:ff:ff
+```
+
+
+
+**kube-proxy 启用 ipvs 模式，将在所有节点做三件事**：
+
+- 创建一个dummy类型虚拟网卡 `kube-ipvs0`
+
+- 把 ClusterIP 地址添加到`kube-ipvs0`，同时添加到ipset中
+
+- 创建 ipvs service，其地址为ClusterIP:Port，ipvs server为所有的Endpoint地址，即Pod IP及端口
+
+ 
+
+### 6.2.6 ipvsadm 命令
+
+```bash
+ipvsadm command [protocol] service-address
+	server-address [packet-forwarding-method]
+	[weight options]
+
+命令：
+-A, --add-service：为ipvs虚拟服务器添加一个虚拟服务，即添加一个需要被负载均衡的虚拟地址。虚拟地址需要是ip地址，端口号，协议的形式。
+-E, --edit-service：修改一个虚拟服务。
+-D, --delete-service：删除一个虚拟服务。
+-C, --clear：清除所有虚拟服务。
+-R, --restore：从标准输入获取ipvsadm命令。一般结合下边的-S使用。
+-S, --save：从标准输出输出虚拟服务器的规则。可以将虚拟服务器的规则保存，在以后通过-R直接读入，以实现自动化配置。
+-a, --add-server：为虚拟服务添加一个real server（RS）
+-e, --edit-server：修改RS
+-d, --delete-server：删除
+-L, -l, --list：列出虚拟服务表中的所有虚拟服务。可以指定地址。添加-c显示连接表。
+-Z, --zero：将所有数据相关的记录清零。这些记录一般用于调度策略。
+--set tcp tcpfin udp：修改协议的超时时间。
+--start-daemon state：设置虚拟服务器的备服务器，用来实现主备服务器冗余。（注：该功能只支持ipv4）
+--stop-daemon：停止备服务器
+
+参数：
+    -t, --tcp-service service-address：指定虚拟服务为tcp服务。service-address要是host[:port]的形式。端口是0表示任意端口。如果需要将端口设置为0，还需要加上-p选项（持久连接）。
+    -u, --udp-service service-address：使用udp服务，其他同上。
+    -f, --fwmark-service integer：用firewall mark取代虚拟地址来指定要被负载均衡的数据包，可以通过这个命令实现把不同地址、端口的虚拟地址整合成一个虚拟服务，可以让虚拟服务器同时截获处理去往多个不同地址的数据包。fwmark可以通过iptables命令指定。如果用在ipv6需要加上-6。
+    -s, --scheduler scheduling-method：指定调度算法。调度算法可以指定以下8种：rr（轮询），wrr（权重），lc（最后连接），wlc（权重），lblc（本地最后连接），lblcr（带复制的本地最后连接），dh（目的地址哈希），sh（源地址哈希），sed（最小期望延迟），nq（永不排队）
+    -p, --persistent [timeout]：设置持久连接，这个模式可以使来自客户的多个请求被送到同一个真实服务器，通常用于ftp或者ssl中。
+    -M, --netmask netmask：指定客户地址的子网掩码。用于将同属一个子网的客户的请求转发到相同服务器。
+    -r, --real-server server-address：为虚拟服务指定数据可以转发到的真实服务器的地址。可以添加端口号。如果没有指定端口号，则等效于使用虚拟地址的端口号。
+    [packet-forwarding-method]：此选项指定某个真实服务器所使用的数据转发模式。需要对每个真实服务器分别指定模式。
+        -g, --gatewaying：使用网关（即直接路由），此模式是默认模式。
+        -i, --ipip：使用ipip隧道模式。
+        -m, --masquerading：使用NAT模式。
+    -w, --weight weight:设置权重。权重是0~65535的整数。如果将某个真实服务器的权重设置为0，那么它不会收到新的连接，但是已有连接还会继续维持（这点和直接把某个真实服务器删除时不同的）。
+    -x, --u-threshold uthreshold：设置一个服务器可以维持的连接上限。0~65535。设置为0表示没有上限。
+    -y, --l-threshold lthreshold：设置一个服务器的连接下限。当服务器的连接数低于此值的时候服务器才可以重新接收连接。如果此值未设置，则当服务器的连接数连续三次低于uthreshold时服务器才可以接收到新的连接。（PS：笔者以为此设定可能是为了防止服务器在能否接收连接这两个状态上频繁变换）
+    --mcast-interface interface：指定使用备服务器时候的广播接口。
+    --syncid syncid：指定syncid，同样用于主备服务器的同步。
+    以下选项用于list命令：
+    -c, --connection：列出当前的IPVS连接。
+    --timeout：列出超时
+    --daemon：
+    --stats：状态信息
+    --rate：传输速率
+    --thresholds：列出阈值
+    --persistent-conn：坚持连接
+    --sor：把列表排序。
+    --nosort：不排序
+    -n, --numeric：不对ip地址进行dns查询
+    --exact：单位
+    -6：如果fwmark用的是ipv6地址需要指定此选项。  
+```
+
+
+
+NAT 模式：
+
+```bash
+# 添加虚拟服务器，指定调度算法为 rr
+ipvsadm -A -t 10.96.0.1:443 -s rr
+
+# 添加真实服务器，可以有多个
+ipvsadm -a -t 10.96.0.1:443 -r 192.168.80.240:6443 -m
+
+# 查询代理规则
+ipvsadm -Ln
+```
+
+
+
+
+
+参考资料：
+
+https://serenafeng.github.io/2020/03/26/kube-proxy-in-iptables-mode/
+
+https://www.pianshen.com/article/1784942488/
+
+
+
+
+
