@@ -28,6 +28,12 @@
 
 [05.K8S Pod概述](/kubernetes/05.K8S%20Pod概述.md)
 
+[06.K8S 资源控制器](/kubernetes/06.K8S%20资源控制器.md)
+
+[07.K8S 配置管理](/kubernetes/07.K8S%20配置管理.md)
+
+[08.K8S 安全认证](/kubernetes/08.K8S%20安全认证.md)
+
 
 
 ## 3. Golang
