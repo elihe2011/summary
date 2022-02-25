@@ -558,6 +558,21 @@ ifconfig ens33 up
 
 
 
+## 5.4 网络流量监控
+
+```bash
+# 网卡监控
+ip -s -h link
+
+# 实时流量监控
+iftop
+iftop -nN -i enp1s0
+```
+
+
+
+
+
 # 6. Shell 技巧
 
 ## 6.1 EOF
