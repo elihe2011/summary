@@ -173,7 +173,11 @@ sudo update-alternatives --config editor
 
 
 
-# 4. 虚拟机磁盘问题
+
+
+# Z. 问题
+
+## 1. 虚拟机磁盘问题
 
 问题描述：
 
@@ -213,7 +217,7 @@ blacklist {
 
 
 
-# 5. DNS 配置
+## 2. DNS 配置
 
 `/etc/resolve.conf` 被覆盖
 
@@ -244,4 +248,19 @@ iface wlp0s20f3 inet static
 ```
 
 
+
+## 3. openssl 配置问题
+
+```bash
+$ openssl req -new -key eli.key -out eli.csr -subj "/CN=eli/O=exped.top"
+Can't load /root/.rnd into RNG
+139723054526912:error:2406F079:random number generator:RAND_load_file:Cannot open file:../crypto/rand/randfile.c:88:Filename=/root/.rnd
+```
+
+解决办法：
+
+```bash
+$ vi /etc/ssl/openssl.cnf
+#RANDFILE               = $ENV::HOME/.rnd
+```
 
