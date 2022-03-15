@@ -40,6 +40,8 @@
 
 [11.K8S Calico](/kubernetes/11.K8S%20Calico.md)
 
+[12.K8S 网络策略](/kubernetes/12.K8S%20网络策略.md)
+
 
 
 ## 3. Golang
