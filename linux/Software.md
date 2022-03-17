@@ -5,16 +5,43 @@
 ## 1.1 代理配置
 
 ```bash
+# 国内仓库
+$ vi /etc/docker/daemon.json
+{
+  "registry-mirrors": [
+    "https://hub-mirror.c.163.com",
+    "https://pvjhx571.mirror.aliyuncs.com"
+  ]
+}
+
+# 代理设置
 mkdir -p /etc/systemd/system/docker.service.d
 cat > /etc/systemd/system/docker.service.d/http-proxy.conf <<EOF
 [Service]
 Environment="ALL_PROXY=http://192.168.3.99:8889/"
-Environment="NO_PROXY=localhost,127.0.0.1,docker.io,hub.docker.com,pvjhx571.mirror.aliyuncs.com"
+Environment="NO_PROXY=localhost,127.0.0.1,docker.io,hub.docker.com,hub-mirror.c.163.com,pvjhx571.mirror.aliyuncs.com"
 EOF
+
 systemctl daemon-reload && systemctl restart docker
-
-
 systemctl show --property=Environment docker
+
+
+mkdir -p ~/.docker
+cat > ~/.docker/config.json <<EOF
+{
+ "proxies":
+ {
+   "default":
+   {
+     "httpProxy": "http://192.168.3.3:8889",
+     "httpsProxy": "http://192.168.3.3:8889",
+     "noProxy": "127.0.0.1,docker.io,hub.docker.com,hub-mirror.c.163.com,pvjhx571.mirror.aliyuncs.com"
+   }
+ }
+}
+EOF
+
+
 ```
 
 

@@ -249,6 +249,41 @@ iface wlp0s20f3 inet static
 
 
 
+You are likely running `systemd-resolved` as a service.
+
+`systemd-resolved` generates two configuration files on the fly, for optional use by DNS client libraries (such as the BIND DNS client library in C libraries):
+
+- `/run/systemd/resolve/stub-resolv.conf` tells DNS client libraries to send their queries to 127.0.0.53. This is where the `systemd-resolved` process listens for DNS queries, which it then forwards on.
+- `/run/systemd/resolve/resolv.conf` tells DNS client libraries to send their queries to IP addresses that `systemd-resolved` has obtained on the fly from its configuration files and DNS server information contained in DHCP leases. Effectively, this bypasses the `systemd-resolved` forwarding step, at the expense of also bypassing all of `systemd-resolved`'s logic for making complex decisions about what to actually forward to, for any given transaction.
+
+In both cases, `systemd-resolved` configures a search list of domain name suffixes, again derived on the fly from its configuration files and DHCP leases (which it is told about via a mechanism that is beyond the scope of this answer).
+
+`/etc/resolv.conf` can optionally be:
+
+- a symbolic link to either of these;
+- a symbolic link to a package-supplied *static* file at `/usr/lib/systemd/resolv.conf`, which also specifies 127.0.0.53 but no search domains calculated on the fly;
+- some other file entirely.
+
+It's likely that you have such a symbolic link. In which case, the thing that knows about the 192.168.1.1 setting, that is (presumably) handed out in DHCP leases by the DHCP server on your LAN, is `systemd-resolved`, which is forwarding query traffic to it as you have observed. Your DNS client libraries, in your applications programs, are themselves only talking to `systemd-resolved`.
+
+Ironically, although it *could* be that you haven't captured loopback interface traffic to/from 127.0.0.53 properly, it is more likely that you aren't seeing it because `systemd-resolved` also (optionally) bypasses the BIND DNS Client in your C libraries and generates no such traffic to be captured.
+
+There's an NSS module provided with `systemd-resolved`, named `nss-resolve`, that is a plug-in for your C libraries. Previously, your C libraries would have used another plug-in named `nss-dns` which uses the BIND DNS Client to make queries using the DNS protocol to the server(s) listed in `/etc/resolv.conf`, applying the domain suffixes listed therein.
+
+`nss-resolve` gets listed *ahead* of `nss-dns` in your `/etc/nsswitch.conf` file, causing your C libraries to not use the BIND DNS Client, or the DNS protocol, to perform name→address lookups at all. Instead, `nss-resolve` speaks a non-standard and idiosyncratic protocol over the (system-wide) Desktop Bus to `systemd-resolved`, which again makes back end queries of 192.168.1.1 or whatever your DHCP leases and configuration files say.
+
+To intercept *that* you have to monitor the Desktop Bus traffic with `dbus-monitor` or some such tool. It's not even IP traffic, let alone IP traffic over a loopback network interface. as the Desktop Bus is reached via an `AF_LOCAL` socket.
+
+If you want to use a third-party resolving proxy DNS server at 1.1.1.1, or some other IP address, you have three choices:
+
+- Configure your DHCP server to hand that out instead of handing out 192.168.1.1. `systemd-resolved` will learn of that via the DHCP leases and use it.
+- Configure `systemd-resolved` via its own configuration mechanisms to use that instead of what it is seeing in the DHCP leases.
+- Make your own `/etc/resolv.conf` file, an actual regular file instead of a symbolic link, list 1.1.1.1 there and remember to turn off `nss-resolve` so that you go back to using `nss-dns` and the BIND DNS Client.
+
+The `systemd-resolved` configuration files are a whole bunch of files in various directories that get combined, and how to configure them for the second choice aforementioned is beyond the scope of this answer. Read the `resolved.conf`(5) manual page for that.
+
+
+
 ## 3. openssl 配置问题
 
 ```bash
