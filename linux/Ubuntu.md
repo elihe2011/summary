@@ -173,6 +173,41 @@ sudo update-alternatives --config editor
 
 
 
+# 4. 远程桌面
+
+```bash
+# 1. 安装相关软件
+apt install vino
+apt install dconf-editor
+
+# 2. 系统重启
+reboot
+
+# 3. 依次展开org->gnome->desktop->remote-access，将 requre-encryption 设为 False。
+dconf-editor
+
+# 4. 安装xrdp
+apt install xrdp
+
+# 5. 解决远程连接黑屏
+vi /etc/xrdp/startwm.sh
+...
+### 新增如下三行
+unset DBUS_SESSION_BUS_ADDRESS
+unset XDG_RUNTIME_DIR
+. $HOME/.profile
+
+if test -r /etc/profile; then
+...
+
+# 6. 重启xrdp
+systemctl restart xrdp
+```
+
+
+
+
+
 
 
 # Z. 问题
