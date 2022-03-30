@@ -16,16 +16,20 @@ $ vi /etc/docker/daemon.json
 
 # 代理设置
 mkdir -p /etc/systemd/system/docker.service.d
-cat > /etc/systemd/system/docker.service.d/http-proxy.conf <<EOF
+cat > /etc/systemd/system/docker.service.d/proxy.conf <<EOF
 [Service]
-Environment="ALL_PROXY=http://192.168.3.99:8889/"
+Environment="HTTP_PROXY=http://192.168.3.3:8889/" 
+Environment="HTTPS_PROXY=http://192.168.3.3:8889/"
 Environment="NO_PROXY=localhost,127.0.0.1,docker.io,hub.docker.com,hub-mirror.c.163.com,pvjhx571.mirror.aliyuncs.com"
 EOF
 
-systemctl daemon-reload && systemctl restart docker
+systemctl daemon-reload
+systemctl restart docker
+
 systemctl show --property=Environment docker
 
 
+# 新方法
 mkdir -p ~/.docker
 cat > ~/.docker/config.json <<EOF
 {
@@ -40,8 +44,6 @@ cat > ~/.docker/config.json <<EOF
  }
 }
 EOF
-
-
 ```
 
 
