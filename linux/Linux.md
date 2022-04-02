@@ -375,3 +375,11 @@ systemctl daemon-reload
 systemctl restart nginx 
 ```
 
+
+
+## 4.3 journalctl 显示不全
+
+```bash
+journalctl -n 40 -u kubelet.service | vim -
+```
+
