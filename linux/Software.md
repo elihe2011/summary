@@ -1,54 +1,6 @@
 
 
-# 1. Docker
-
-## 1.1 代理配置
-
-```bash
-# 国内仓库
-$ vi /etc/docker/daemon.json
-{
-  "registry-mirrors": [
-    "https://hub-mirror.c.163.com",
-    "https://pvjhx571.mirror.aliyuncs.com"
-  ]
-}
-
-# 代理设置
-mkdir -p /etc/systemd/system/docker.service.d
-cat > /etc/systemd/system/docker.service.d/proxy.conf <<EOF
-[Service]
-Environment="HTTP_PROXY=http://192.168.3.3:8889/" 
-Environment="HTTPS_PROXY=http://192.168.3.3:8889/"
-Environment="NO_PROXY=localhost,127.0.0.1,docker.io,hub.docker.com,hub-mirror.c.163.com,pvjhx571.mirror.aliyuncs.com"
-EOF
-
-systemctl daemon-reload
-systemctl restart docker
-
-systemctl show --property=Environment docker
-
-
-# 新方法
-mkdir -p ~/.docker
-cat > ~/.docker/config.json <<EOF
-{
- "proxies":
- {
-   "default":
-   {
-     "httpProxy": "http://192.168.3.3:8889",
-     "httpsProxy": "http://192.168.3.3:8889",
-     "noProxy": "127.0.0.1,docker.io,hub.docker.com,hub-mirror.c.163.com,pvjhx571.mirror.aliyuncs.com"
-   }
- }
-}
-EOF
-```
-
-
-
-# 2. hey 性能测试
+# 1. hey 性能测试
 
 ```bash
 # 2个客户端，持续发送5s请求
