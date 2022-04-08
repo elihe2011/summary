@@ -68,6 +68,10 @@
 
 [25.K8S 裸金属LB](/kubernetes/25.K8S%20裸金属LB.md)
 
+[26.K8S Kubelet垃圾回收](/kubernetes/26.K8S%20Kubelet垃圾回收.md)
+
+
+
 
 ## 3. Golang
 
