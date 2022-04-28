@@ -383,3 +383,31 @@ systemctl restart nginx
 journalctl -n 40 -u kubelet.service | vim -
 ```
 
+
+
+# 5. 磁盘操作
+
+## 5.1 dd
+
+```bash
+# 复制磁盘
+dd if=/dev/sda of=/dev/sdb
+
+# 磁盘镜像
+dd if=/dev/sda of=/home/sdadisk.img
+
+# 镜像还原
+dd if=/dev/sda2 of=/home/sda2.img bs=4096
+
+# 远程备份磁盘
+ssh root@10.40.0.9 "dd if=/dev/sda | gzip -1 -" | dd of=backup.gz
+
+# 覆写磁盘
+dd if=/dev/zero of=/dev/sda1
+dd if=/dev/urandom of=/dev/sda1
+
+# 监控进度
+apt install pv
+dd if=/dev/urandom | pv | dd of=/dev/sdc1
+```
+
