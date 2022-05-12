@@ -8,7 +8,14 @@ cat /proc/meminfo
 dmidecode -t memory
 ```
 
- 
+ 内存释放：
+
+```bash
+sync     # 多执行几次
+echo 3 > /proc/sys/vm/drop_caches
+```
+
+
 
 ## 1.2 CPU
 
@@ -285,6 +292,24 @@ iftop -nN -i enp1s0
 
 
 
+## 2.5 nc
+
+net cat
+
+```bash
+nc -l 8000     开启8000监听端口
+
+nc -z -w 5 127.0.0.1 8000   连接端口，5s超时
+
+nc -z -w 5 127.0.0.1 3300-3310 端口扫描
+
+nc -v 192.168.31.20 1080
+```
+
+
+
+
+
 # 3. 系统命令
 
 ## 3.1 pidstat
@@ -411,3 +436,25 @@ apt install pv
 dd if=/dev/urandom | pv | dd of=/dev/sdc1
 ```
 
+
+
+# 6. 文本编辑
+
+## 6.1 vim
+
+```bash
+:g/^$/d  删除空行
+:g/^\s*//g  删除行首空格
+:g/\s*$//g  删除行尾空格
+```
+
+
+
+# 7. 权限控制
+
+## 7.1  suid, sgid, sbit
+
+- suid: 二进制可执行文件(u+rx)，执行时，临时获取该文件的属主权限
+- sgid: 二进制可执行文件(g+rx)，执行时，临时获取该文件的属组权限
+           目录(g+rwx)，在目录下新建的文件，文件属组与目录一致
+- sbit：目录，在目录下新建文件，只有文件所有者可以删除
