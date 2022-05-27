@@ -206,7 +206,21 @@ systemctl restart xrdp
 
 
 
+# 5. 网络配置
 
+## 5.1 ubuntu16
+
+```bash
+vi /etc/network/interfaces
+auto ens33
+iface ens33 inet static
+address 192.168.80.200
+netmask 255.255.255.0
+gateway 192.168.80.2
+dns-nameserver 8.8.8.8
+
+systemctl restart networking.service
+```
 
 
 

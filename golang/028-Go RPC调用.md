@@ -1,14 +1,3 @@
----
-layout: post
-title:  Go RPC
-date:   2018-01-20 10:30:12
-comments: true
-photos: 
-tags: 
-  - rpc
-categories: Golang
----
-
 # 1. RPC
 
 - 客户端(client): 服务调用的发起方
@@ -25,8 +14,6 @@ categories: Golang
   - 调用服务端的程序方法
   - 将结果打包成数据包发给客户端Stub程序
 
-<!-- more -->
-
 ![reflect_1](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/rpc/rpc_flow.png)
 
 # 2. Go 语言实现 RPC
@@ -40,6 +27,8 @@ func (t *T) MethodName(argType T1, replyType *T2) error
 ```
 
 T1 和 T2 必须能被 encoding/gob 包编码和解码
+
+
 
 # 3. RPC HTTP 调用 (异步调用)
 
@@ -92,6 +81,8 @@ func main() {
 	}
 }
 ```
+
+
 
 ## 3.2 客户端
 
@@ -147,6 +138,8 @@ func main() {
 }
 ```
 
+
+
 # 4. JSONRPC 
 
 ## 4.1 服务端
@@ -186,6 +179,8 @@ func main() {
 }
 ```
 
+
+
 ## 4.2 客户端 （Golang)
 
 ```go
@@ -212,6 +207,8 @@ func main() {
 }
 ```
 
+
+
 ## 4.3 客户端 (Python)
 
 ```python
@@ -232,6 +229,8 @@ def main():
     msg = json.loads(data.decode('utf-8'))
     print(msg.get('result'))
 ```
+
+
 
 ## 4.4 客户端 （Telnet)
 

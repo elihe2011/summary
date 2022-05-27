@@ -1,26 +1,23 @@
----
-layout: post
-title:  Go 标准库unsafe
-date:   2018-01-16 12:11:18
-comments: true
-photos: 
-tags: 
-  - go
-categories: Golang
----
-
-# 1. unsafe包
+# 1. unsafe
 
 Go是强类型语言，不允许不同类型的指针互相转换。但它提供unsafe包作为中间媒介，快速实现类型转换，但该转换是不安全的。
 
-## 1.1 Go指针和unsafe.Pointer的区别
 
-**Go指针**：
+
+## 1.1 指针类型
+
+![image](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/golang/unsafe_pointer.png)
+
+
+
+**`*T`**：
 
 - 不能进行数学运算
 - 不同类型的指针，不能相互转换
 - 不同类型的指针不能使用 == 或 != 比较
 - 不同类型的指针变量不能相互赋值
+
+
 
 **unsafe.Pointer**:
 
@@ -29,9 +26,7 @@ type ArbitraryType int
 type Pointer *ArbitraryType
 ```
 
-![unsafe_pointer](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/golang/unsafe_pointer.png)
 
-<!--more-->
 
 **uintptr**: Go的内置类型，能存储指针的整型，与普通指针区别如下
 
@@ -42,6 +37,7 @@ type uintptr uintptr
 - 普通指针不可以参与计算，但`uintptr`可以。
 - 普通指针和`uintptr`之间必选进行强制转换。
 - GC 不会把`uintptr`当成指针，由`uintptr`变量表示的地址处的数据也可能被GC回收。
+
 
 
 ## 1.2 主要方法
@@ -61,9 +57,11 @@ func Alignof（variable ArbitraryType）uintptr
 func Offsetof（selector ArbitraryType）uintptr
 ```
 
+
+
 # 2. 指针转换
 
-## 2.1 示例：int32指针指向int64数据
+## 2.1 int32指针指向int64数据
 
 ```go
 func main() {
@@ -83,7 +81,9 @@ func main() {
 }
 ```
 
-## 2.2 示例：遍历数组元素
+
+
+## 2.2  遍历数组元素
 
 ```go
 func main() {
@@ -98,6 +98,8 @@ func main() {
 	}
 }
 ```
+
+
 
 # 3. 类型对齐值
 
@@ -127,7 +129,9 @@ func main() {
 }
 ```
 
-# 4. 利用unsafe包修改私有成员
+
+
+# 4. 修改私有成员
 
 结构体(struct)，可以通过offset函数获取成员的偏移量，进而获取成员的地址。读写该地址的内存，就可以达到改变成员值的目的
 
@@ -151,6 +155,8 @@ func main() {
 	fmt.Println(user)
 }
 ```
+
+
 
 # 5. 获取slice的长度
 
@@ -178,6 +184,8 @@ func main() {
 	fmt.Printf("Cap=%d, cap(s)=%d\n", *Cap, cap(s))
 }
 ```
+
+
 
 # 6. 获取map长度
 
@@ -212,7 +220,9 @@ func main() {
 }
 ```
 
-# 7. 实现字符串和byte切片的零拷贝转换
+
+
+# 7. string和[]byte的零拷贝转换
 
 slice和string的底层数据结构：
 

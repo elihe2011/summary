@@ -274,7 +274,15 @@ ifconfig ens33 up
 ## 2.3 DNS
 
 ```bash
- systemd-resolve --status
+systemd-resolve --statistics
+ 
+# 临时方案 
+vi /etc/resolv.conf
+nameserver 8.8.8.8
+
+# 永久方案（重启后临时方案失效）
+vi /etc/resolvconf/resolv.conf.d/tail
+nameserver 8.8.8.8
 ```
 
 
@@ -410,6 +418,22 @@ journalctl -n 40 -u kubelet.service | vim -
 
 
 
+## 4.4 运行级别
+
+```bash
+# 图形模式
+sudo systemctl set-default graphical.target
+sudo systemctl set-default runlevel5.target
+
+# 文本命令模式
+sudo systemctl set-default multi-user.target
+sudo systemctl set-default runlevel3.target
+```
+
+
+
+
+
 # 5. 磁盘操作
 
 ## 5.1 dd
@@ -438,9 +462,39 @@ dd if=/dev/urandom | pv | dd of=/dev/sdc1
 
 
 
+## 5.2 格式化
+
+```bash
+fdisk /dev/sdb
+
+mkfs.ext4 /dev/sdb1
+
+mkdir -p /data
+mount /dev/sdb1 /data
+
+cat >> /etc/fstab <<EOF
+/dev/sdb1 /data ext4 defaults 0 0
+EOF
+```
+
+
+
+
+
 # 6. 文本编辑
 
 ## 6.1 vim
+
+设置tab键大小：
+
+```bash
+vi /etc/vim/vimrc
+set tabstop=4
+```
+
+
+
+删除空行：
 
 ```bash
 :g/^$/d  删除空行
