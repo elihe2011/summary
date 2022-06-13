@@ -1,14 +1,4 @@
----
-layout: post
-title: Go Gin框架
-date:  2019-05-17 10:22:58
-comments: true
-photos: 
-tags: 
-categories: Golang
----
-
-# 1. Gin简介
+# 1. 简介
 
 ## 1.1 核心术语
 
@@ -48,7 +38,7 @@ type node struct {
 }
 ```
 
-<!-- more -->
+
 
 路由的保存：
 
@@ -1092,6 +1082,7 @@ func downloadFromUrl(c *gin.Context) {
 	}
 
 	c.DataFromReader(http.StatusOK, contentLength, contentType, reader, extraHeaders)
+}
 ```
 
 
@@ -1538,7 +1529,472 @@ func main() {
 
 
 
-# 8. Swagger API
+# 8. 文件分段上传
+
+## 8.1 处理逻辑
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/platform/upload-bug-file.png) 
+
+
+
+## 8.2 后端逻辑
+
+```go
+const (
+	FileInComplete = iota
+	FileComplete
+)
+
+func CheckChunkHandler(c *gin.Context) {
+	fileHash := c.Query("hash")
+	targetFileName := c.Query("fileName")
+	uploadPath := filepath.Join(FileStoragePath, fileHash)
+	chunkList := make([]string, 0)
+
+	// 文件完整性： 0-不完整 1-完整
+	state := FileInComplete
+
+	// 路径是否存在
+	isExistPath := DoesDirExist(uploadPath)
+	if isExistPath {
+		// 获取上传目录下的文件名
+		files, err := ioutil.ReadDir(uploadPath)
+		if err != nil {
+			log.Println(err)
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": err.Error(),
+			})
+			return
+		}
+
+		for _, f := range files {
+			fileName := f.Name()
+
+			// 已生成结果文件，不需要再次上传文件块
+			if fileName == targetFileName {
+				state = FileComplete
+			} else {
+				chunkList = append(chunkList, fileName)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":   "ok",
+		"state":     state,
+		"chunkList": chunkList,
+	})
+}
+
+func UploadChunkHandler(c *gin.Context) {
+	fileHash := c.PostForm("hash")
+	uploadPath := filepath.Join(FileStoragePath, fileHash)
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		log.Println(err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+
+	// 路径是否存在
+	isExistPath := DoesDirExist(uploadPath)
+
+	// 路径不存在，先创建
+	if !isExistPath {
+		err = os.Mkdir(uploadPath, os.ModePerm)
+		if err != nil {
+			log.Println(err)
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": err.Error(),
+			})
+			return
+		}
+	}
+
+	// 保存文件
+	err = c.SaveUploadedFile(file, filepath.Join(uploadPath, file.Filename))
+	if err != nil {
+		log.Println(err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+
+	chunkList := make([]string, 0)
+
+	// 获取上传目录下的文件名
+	files, err := ioutil.ReadDir(uploadPath)
+	if err != nil {
+		log.Println(err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+
+	for _, f := range files {
+		fileName := f.Name()
+		chunkList = append(chunkList, fileName)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"chunkList": chunkList,
+	})
+}
+
+func MergeChunkHandler(c *gin.Context) {
+	fileHash := c.Query("hash")
+	fileName := c.Query("fileName")
+
+	uploadPath := filepath.Join(FileStoragePath, fileHash)
+
+	// 路径是否存在
+	isExistPath := DoesDirExist(uploadPath)
+	if !isExistPath {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "storage directory not found",
+		})
+		return
+	}
+
+	// 结果文件
+	filePath := filepath.Join(uploadPath, fileName)
+
+	// 结果文件不存在则合并
+	isExistFile := DoesFileExist(filePath)
+	if !isExistFile {
+		// 读取上传目录下的文件
+		files, err := ioutil.ReadDir(uploadPath)
+		if err != nil {
+			log.Println(err)
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": err.Error(),
+			})
+			return
+		}
+
+		// 创建完整文件
+		completeFile, err := os.Create(filePath)
+		if err != nil {
+			log.Println(err)
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": err.Error(),
+			})
+			return
+		}
+		defer completeFile.Close()
+
+		// 最大文件名
+		var maxFileName int
+		for _, f := range files {
+			n, err := strconv.Atoi(f.Name())
+			if err != nil {
+				continue
+			}
+			if n > maxFileName {
+				maxFileName = n
+			}
+		}
+
+		// 合并文件(从小到大)
+		for i := 0; i <= maxFileName; i++ {
+			buf, err := ioutil.ReadFile(filepath.Join(uploadPath, strconv.Itoa(i)))
+			if err != nil {
+				log.Println(err)
+				c.JSON(http.StatusBadRequest, gin.H{
+					"message": err.Error(),
+				})
+				return
+			}
+
+			// 写入文件
+			completeFile.Write(buf)
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"fileUrl": fmt.Sprintf("%s://%s/download/%s/%s", "http", c.Request.Host, fileHash, fileName),
+	})
+}
+```
+
+
+
+## 8.3 前端逻辑
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <link rel="stylesheet" href="/static/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="/static/css/bootstrap-theme.min.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+
+        .wrap {
+            width: 100px;
+            height: 40px;
+            background-color: red;
+            text-align: center
+        }
+
+        .wrap p {
+
+            width: 100%;
+            height: 100%;
+            line-height: 2;
+            text-align: center;
+        }
+
+        #file {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100px;
+            height: 40px;
+            display: block;
+            opacity: 0;
+        }
+
+        .progress {
+            position: relative;
+        }
+
+        .progress-bar {
+            transition: width .3s ease
+        }
+
+        .progress .value {
+            position: absolute;
+            color: #FF9800;
+            left: 50%;
+        }
+
+        .container {
+            width: 500px;
+        }
+
+        .row {
+            border-bottom: 1px solid gray;
+            padding: 10px;
+        }
+
+        .hidden {
+            display: none;
+        }
+        .mrb20 {
+            margin: 20px 0;
+        }
+    </style>
+    <title>上传文件</title>
+</head>
+
+<body>
+<div class="container">
+    <div class="row">
+        <div class="col-md-4 mrb20">点击按钮开始上传文件</div>
+        <div class="col-md-8">
+            <div class="wrap btn btn-default">
+                <input type="file" id="file" />
+                <p>上传文件</p>
+            </div>
+        </div>
+    </div>
+    <div class="row" id="process1" style="display: none">
+        <div class="col-md-4">校验文件进度</div>
+        <div class="col-md-8">
+            <div class="progress">
+                <div id="checkProcessStyle" class="progress-bar" style="width:0%"></div>
+                <p id="checkProcessValue" class="value">0%</p>
+            </div>
+        </div>
+    </div>
+    <div class="row" id="process2" style="display: none">
+        <div class="col-md-4">上传文件进度</div>
+        <div class="col-md-8">
+            <div class="progress">
+                <div id="uploadProcessStyle" class="progress-bar" style="width:0%"></div>
+                <p id="uploadProcessValue" class="value">0%</p>
+            </div>
+        </div>
+    </div>
+</div>
+<script src="/static/js/jquery-1.10.2.min.js"></script>
+<script src="/static/js/bootstrap.min.js"></script>
+<script src="/static/js/spark-md5.min.js"></script>
+<script>
+    let baseUrl = 'http://127.0.0.1:3000'
+    let chunkSize = 10 * 1024 * 1024  // 10M
+    let fileSize = 0
+    let file = null
+    let hasUploaded = 0
+    let chunks = 0
+
+    $("#file").on('change', function () {
+        file = this.files[0]
+        fileSize = file.size;
+        responseChange(file)
+    })
+
+    async function responseChange(file) {
+        // 文件校验进度
+        $("#process1").slideDown(200)
+
+        // 文件hash值
+        let hash = await md5File(file)
+
+        // 校验文件的MD5
+        let result = await checkFileChunk(hash, file.name)
+
+        // 如果文件已存在, 就秒传
+        if (result.state === 1) {
+            alert('文件已秒传')
+            return
+        }
+
+        // 上传进度
+        $("#process2").slideDown(200)
+
+        // 上传文件块
+        await uploadFileChunk(hash, result.chunkList)
+
+        // 合并文件
+        mergeFileChunk(hash)
+    }
+
+    // 浏览器读取文件，获取hash校验值
+    function md5File(file) {
+        return new Promise((resolve, reject) => {
+            let blobSlice = File.prototype.slice || File.prototype.mozSlice || File.prototype.webkitSlice,
+                chunkSize = file.size / 100,
+                chunks = 100,
+                currentChunk = 0,
+                spark = new SparkMD5.ArrayBuffer(),
+                fileReader = new FileReader();
+
+            fileReader.onload = function (e) {
+                // console.log('read chunk nr', currentChunk + 1, 'of', chunks);
+                spark.append(e.target.result); // Append array buffer
+                currentChunk++;
+
+                if (currentChunk < chunks) {
+                    loadNext();
+                } else {
+                    console.log('finished loading');
+                    let result = spark.end()
+                    resolve(result)
+                }
+            };
+
+            fileReader.onerror = function () {
+                console.warn('oops, something went wrong.');
+            };
+
+            function loadNext() {
+                let start = currentChunk * chunkSize,
+                    end = ((start + chunkSize) >= file.size) ? file.size : start + chunkSize;
+
+                fileReader.readAsArrayBuffer(blobSlice.call(file, start, end));
+                $("#checkProcessStyle").css({
+                    width: (currentChunk + 1) + '%'
+                })
+                $("#checkProcessValue").html((currentChunk + 1) + '%')
+            }
+
+            loadNext();
+        })
+    }
+
+    // 校验文件是否已上传
+    function checkFileChunk(hash, fileName) {
+        return new Promise((resolve, reject) => {
+            let url = baseUrl + '/chunk/check?hash=' + hash + '&fileName=' + fileName
+            $.getJSON(url, function (data) {
+                console.log(data)
+                resolve(data)
+            })
+        })
+    }
+
+    // 异步上传文件
+    async function uploadFileChunk(hash, chunkList) {
+        chunks = Math.ceil(fileSize / chunkSize)
+        hasUploaded = chunkList.length
+        for (let i = 0; i < chunks; i++) {
+            // 如果已经存在, 则不用再上传当前块
+            let exist = chunkList.indexOf(i + "") > -1
+            if (!exist) {
+                let index = await upload(i, hash)
+                console.log(index)
+
+                hasUploaded++
+                let radio = Math.floor((hasUploaded / chunks) * 100)
+                $("#uploadProcessStyle").css({
+                    width: radio + '%'
+                })
+                $("#uploadProcessValue").html(radio + '%')
+            }
+        }
+    }
+
+    function upload(i, hash) {
+        return new Promise((resolve, reject) => {
+            let start = i * chunkSize
+            let end = (i + 1) * chunkSize >= file.size ? file.size : (i + 1) * chunkSize
+
+            // 文件块
+            const blob = new File([file.slice(start, end)], `${i}`)
+
+            let formData = new FormData()
+            formData.append("file", blob)
+            formData.append("hash", hash)
+
+            $.ajax({
+                url: baseUrl + "/chunk/upload",
+                type: "POST",
+                data: formData,
+                async: true,
+                processData: false, // 不要对form进行处理
+                contentType: false, // 自动生成正确的Content-Type
+                success: function (data) {
+                    console.log(data)
+                    resolve(data.message)
+                }
+            })
+        })
+
+    }
+
+    // 合并文件
+    function mergeFileChunk(fileMd5Value) {
+        let url = baseUrl + '/chunk/merge?hash=' + fileMd5Value + "&fileName=" + file.name
+        $.getJSON(url, function (data) {
+            console.log(data)
+            alert('上传成功')
+        })
+    }
+</script>
+</body>
+
+</html>
+```
+
+
+
+# 9. Swagger API
 
 ```bash
 go get -u github.com/swaggo/swag/cmd/swag
@@ -1548,7 +2004,7 @@ go get -u github.com/swaggo/gin-swagger/swaggerFiles
 
 
 
-## 8.1 API 接口注释
+## 9.1 API 接口注释
 
 ```go
 // LoginHandler godoc
@@ -1581,7 +2037,7 @@ func LoginHandler(c *gin.Context) (interface{}, error) {
 
 
 
-## 8.2 生成配置
+## 9.2 生成配置
 
 ```bash
 swag init
@@ -1589,7 +2045,7 @@ swag init
 
 
 
-## 8.3 引入配置
+## 9.3 引入配置
 
 ```go
 // main.go
@@ -1606,7 +2062,7 @@ func init() {
 
 
 
-## 8.4 禁用Swagger
+## 9.4 禁用Swagger
 
 `gin-swagger`还提供了`DisablingWrapHandler`函数，方便我们通过设置某些环境变量来。例如：
 
@@ -1618,7 +2074,7 @@ r.GET("/swagger/*any", gs.DisablingWrapHandler(swaggerFiles.Handler, "NAME_OF_EN
 
 
 
-# 9. 接口测试
+# 10. 接口测试
 
 ```bash
 import (
@@ -1653,7 +2109,7 @@ func TestPingRoute(t *testing.T) {
 
 
 
-# 10. 源码解析
+# 11. 源码解析
 
 ```go
 // 获取一个gin框架实例
@@ -1889,4 +2345,4 @@ func (c *Context) reset() {
 
 
 
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/platform/gin-architecture.png) 
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/platform/gin-work-flow.png) 

@@ -1,13 +1,3 @@
----
-layout: post
-title: Fiber 框架学习
-date: 2021-10-24 13:29:45
-comments: true
-photos: 
-tags: 
-categories: golang
----
-
 
 # 1. 入门
 
@@ -29,7 +19,7 @@ func main() {
 }
 ```
 
-<!--more-->
+
 
 # 2. 配置
 
