@@ -224,6 +224,34 @@ systemctl restart networking.service
 
 
 
+# 6. 升级内核
+
+## 6.1 ubuntu16
+
+https://kernel.ubuntu.com/~kernel-ppa/mainline/v4.6-yakkety/
+
+```bash
+wget --no-check-certificate https://kernel.ubuntu.com/~kernel-ppa/mainline/v4.6.7/linux-headers-4.6.7-040607_4.6.7-040607.201608160432_all.deb
+wget --no-check-certificate https://kernel.ubuntu.com/~kernel-ppa/mainline/v4.6.7/linux-headers-4.6.7-040607-generic_4.6.7-040607.201608160432_amd64.deb
+wget --no-check-certificate https://kernel.ubuntu.com/~kernel-ppa/mainline/v4.6.7/linux-image-4.6.7-040607-generic_4.6.7-040607.201608160432_amd64.deb
+```
+
+
+
+安装：
+
+```bash
+dpkg -i *.deb
+reboot
+
+uname -r
+4.6.7-040607-generic
+```
+
+
+
+
+
 # Z. 问题
 
 ## 1. 虚拟机磁盘问题
