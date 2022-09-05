@@ -250,6 +250,40 @@ uname -r
 
 
 
+# 7. 安装 Python
+
+PPA方式：Personal Package Archive
+
+```bash
+add-apt-repository ppa:deadsnakes/ppa 
+
+apt update 
+apt install python3.9 
+```
+
+
+
+源码方式：
+
+```bash
+# 编译工具
+apt install -y wget build-essential checkinstall 
+apt install -y libreadline-gplv2-dev libncursesw5-dev libssl-dev \
+    libsqlite3-dev tk-dev libgdbm-dev libc6-dev libbz2-dev libffi-dev zlib1g-dev 
+    
+# 下载源码    
+wget https://www.python.org/ftp/python/3.9.6/Python-3.9.6.tgz 
+
+# 编译
+tar zxvf Python-3.9.6.tgz 
+cd Python-3.9.6 
+./configure --enable-optimizations 
+
+make altinstall 
+```
+
+
+
 
 
 # Z. 问题
