@@ -55,5 +55,9 @@ pacman -S msys/gcc
 # 查询并找到msys/make
 pacman -Ss make
 pacman -S msys/make
+
+
+# The GCC compiler suite and the development libraries needed for cgo can be installed with just one command:
+pacman -S --needed base-devel mingw-w64-i686-toolchain mingw-w64-x86_64-toolchain
 ```
 

@@ -284,6 +284,39 @@ make altinstall
 
 
 
+# 8. Samba
+
+```bash
+apt install samba
+
+systemctl status smbd
+
+netstat -tulnp | grep smbd
+tcp        0      0 0.0.0.0:445             0.0.0.0:*               LISTEN      18039/smbd
+tcp        0      0 0.0.0.0:139             0.0.0.0:*               LISTEN      18039/smbd
+tcp6       0      0 :::445                  :::*                    LISTEN      18039/smbd
+tcp6       0      0 :::139                  :::*                    LISTEN      18039/smbd
+
+
+smbpasswd -a smbuser
+
+mkdir -p /data
+chmod 755 /data
+chown smbuser /data
+
+
+vi /etc/samba/smb.conf 
+
+[winshare]
+   path = /data
+   browseable = yes
+   read only = no
+   valid user = smbuser
+   
+
+systemctl restart smbd
+```
+
 
 
 # Z. 问题
