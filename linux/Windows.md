@@ -61,3 +61,18 @@ pacman -S msys/make
 pacman -S --needed base-devel mingw-w64-i686-toolchain mingw-w64-x86_64-toolchain
 ```
 
+
+
+# 3. 英文系统
+
+部分软件字符乱码
+
+Settings -> Time&Language -> Region: 
+
+- Country or region => China
+
+-  Additional date, time, & reginal settings -> Region
+  - Formats: Format => Chinese xxx
+  - Administrative -> Change system locale:  Current system locale => Chinese xxx (NOT chose Beta box)
+- Restart
+
