@@ -386,9 +386,9 @@ Debian & Ubuntu16：`/etc/network/interfaces`
 ```bash
 auto wlp0s20f3
 iface wlp0s20f3 inet static
-    address 192.168.100.80
-    netmask 255.255.255.0
-    dns-nameservers 8.8.8.8
+address 192.168.100.80
+netmask 255.255.255.0
+dns-nameserver 8.8.8.8
 ```
 
 
