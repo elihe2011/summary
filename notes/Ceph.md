@@ -22,7 +22,7 @@ Ceph 的特点：
 2. mgr：manager
 3. osd：storage
 4. mds(optional)：用于 CephFS
-5. radosgw(optional：用于 Ceph Object Storage
+5. radosgw(optional)：用于 Ceph Object Storage
 
 
 
