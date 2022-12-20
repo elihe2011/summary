@@ -22,6 +22,9 @@ dpkg -s vim
 
 # 查询版本
 apt-cache show vim | grep Version
+
+# 只下载不安装：/var/cache/apt/archives 
+apt install -d mosquitto
 ```
 
 

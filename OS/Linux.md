@@ -285,6 +285,24 @@ vi /etc/resolvconf/resolv.conf.d/tail
 nameserver 8.8.8.8
 ```
 
+添加DNS：
+
+```bash
+$ vi /etc/systemd/resolved.conf
+...
+[Resolve]
+DNS=114.114.114.114
+DNS=8.8.8.8
+
+systemctl restart systemd-resolved
+```
+
+
+
+
+
+
+
 
 
 ## 2.4 网络流量监控
@@ -524,4 +542,84 @@ set tabstop=4
 ```bash
 find ./ -name '*.bak' -print0 | xargs -0 rm -rf
 ```
+
+
+
+# 9. 进程内存
+
+```bash
+# 1. 通过进程的 status
+$ cat /proc/1127/status
+Name:   python3
+Umask:  0022
+State:  S (sleeping)
+Tgid:   1127
+Ngid:   0
+Pid:    1127
+PPid:   862
+TracerPid:      0
+Uid:    1000    1000    1000    1000
+Gid:    1000    1000    1000    1000
+FDSize: 64
+Groups: 4 24 27 30 46 116 1000
+NStgid: 1127
+NSpid:  1127
+NSpgid: 1127
+NSsid:  862
+VmPeak:   108340 kB
+VmSize:   108340 kB
+VmLck:         0 kB
+VmPin:         0 kB
+VmHWM:     83356 kB
+VmRSS:     83076 kB   # 物理内存占用
+...
+
+# 2. 通过 pmap 详情
+$ pmap -x 1127
+1127:   /home/ubuntu/venv/bin/python3 ./main.py
+Address           Kbytes     RSS   Dirty Mode  Mapping
+0000000000400000     140     140       0 r---- python3.8
+0000000000423000    2656    2656       0 r-x-- python3.8
+00000000006bb000    2292     852       0 r---- python3.8
+00000000008f8000       4       4       4 r---- python3.8
+00000000008f9000     284     284     272 rw--- python3.8
+0000000000940000     140     140     140 rw---   [ anon ]
+0000000001422000   11476   11408   11408 rw---   [ anon ]
+00007f5f20ceb000    1024     796     796 rw---   [ anon ]
+...
+---------------- ------- ------- -------
+total kB          108344   83120   64816
+
+# 3. 通过 smaps
+$ cat /proc/1127/smaps | grep '^Rss:' | awk '{sum +=$2} END{print sum}'
+83120
+
+# 4. 通过 ps 命令
+$ ps -e -o 'pid,comm,args,pcpu,rsz,vsz,stime,user,uid' | awk '$1 ~ /1127/'
+   1127 python3         /home/ubuntu/venv/bin/pytho  0.1 83076 108340 Oct08 ubuntu    1000
+
+# 按内存占用排序
+$ ps -e -o 'pid,comm,args,pcpu,rsz,vsz,stime,user,uid' | grep python | sort -k5nr
+   1127 python3         /home/ubuntu/venv/bin/pytho  0.1 83076 108340 Oct08 ubuntu    1000
+ 189813 grep            grep --color=auto python     0.0   656   6432 17:18 root         0
+    771 networkd-dispat /usr/bin/python3 /usr/bin/n  0.0 20728  37132 Oct08 root         0
+    862 supervisord     /usr/bin/python3 /usr/bin/s  0.0 23992  31396 Oct08 root         0
+    863 unattended-upgr /usr/bin/python3 /usr/share  0.0 21464 115524 Oct08 root         0
+
+# 方法2
+$ ps -e -o 'pid,comm,args,pcpu,rsz,vsz,stime,user,uid' --sort -rsz | grep python
+   1127 python3         /home/ubuntu/venv/bin/pytho  0.1 83076 108340 Oct08 ubuntu    1000
+    862 supervisord     /usr/bin/python3 /usr/bin/s  0.0 23992  31396 Oct08 root         0
+    863 unattended-upgr /usr/bin/python3 /usr/share  0.0 21464 115524 Oct08 root         0
+    771 networkd-dispat /usr/bin/python3 /usr/bin/n  0.0 20728  37132 Oct08 root         0
+ 189821 grep            grep --color=auto python     0.0   656   6432 17:21 root         0
+ 
+# 内存使用前10
+$ ps aux | sort -k4,4nr | head -n 10
+
+# 5. top (P：按CPU排序，M: 按内存排序)
+top -p 1127
+```
+
+
 
