@@ -1,13 +1,3 @@
----
-layout: post
-title: Go OS性能数据
-date:  2019-05-16 15:22:58
-comments: true
-photos: 
-tags: 
-categories: Golang
----
-
 # 1. 系统性能
 
 psutil是一个跨平台进程和系统监控的Python库，gopsutil是其Go语言版本的实现。适合做一些诸如采集系统信息和监控的服务
@@ -65,8 +55,6 @@ func getNetInfo() {
 	}
 }
 ```
-
-<!-- more -->
 
 
 

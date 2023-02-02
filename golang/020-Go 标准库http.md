@@ -323,3 +323,224 @@ func ProxyRequestHandler(proxy *httputil.ReverseProxy) func(http.ResponseWriter,
 }
 ```
 
+
+
+# 4. 平滑升级
+
+## 4.1 要求
+
+**1. 正在处理的请求怎么办?**
+
+- **等待处理完成后再退出**
+- Golang 1.8+ 支持
+- 即优雅的关闭
+- 另外一种方式，可使用sync.WaitGroup
+
+
+
+**2. 新进来的请求怎么办?**
+
+- Fork一个子进程，**继承父进程的监听socket**
+- 子进程启动成功后，接收新的连接
+- 父进程停止接收新的连接，等已有的请求处理完毕，退出
+- 优雅的重启成功
+
+
+
+## 4.2 进程句柄继承
+
+子进程如何继承父进程的文件句柄？
+
+- 通过`os.Cmd`对象中的ExtraFiles参数进程传递
+- 文件句柄继承实例分析
+
+web server 优雅重启？
+
+- **使用go1.8+的Shutdown方法进行优雅关闭**
+- **使用socket继承实现，子进程接管父进程监听的socket**
+
+信号处理：
+
+- 通过kill命令给正常运行的程序发送信号
+- 不处理的话，程序会panic处理
+
+
+
+## 4.3 实现
+
+```go
+// net/http, 优雅关闭服务
+server.Shutdown(ctx)
+
+// os/exec, socket继承
+args := []string{"-graceful"}
+cmd := exec.Command(os.Args[0], args...)
+cmd.Stdout = os.Stdout
+cmd.Stderr = os.Stderr
+cmd.ExtraFiles = []*os.File{f}  // put socket FD at the first entry
+cmd.Start()
+```
+
+示例：
+
+```go
+var (
+	server *http.Server
+	listener net.Listener
+	graceful = flag.Bool("graceful", false, "listen on fd open 3 (internal use only)")
+)
+
+func handler(w http.ResponseWriter, r *http.Request) {
+	time.Sleep(20 * time.Second)
+	w.Write([]byte("hello world!"))
+}
+
+func main() {
+	flag.Parse()
+
+	http.HandleFunc("/hello", handler)
+	server = &http.Server{Addr: ":3001"}
+
+	var err error
+	if *graceful {
+		log.Print("main: Listening to existing file descriptor 3.")
+		// cmd.ExtraFiles: If non-nil, entry i becomes file descriptor 3+i.
+		// when we put socket FD at the first entry, it will always be 3(0+3)
+		f := os.NewFile(3, "")
+		listener, err = net.FileListener(f)
+	} else {
+		log.Print("main: Listening on a new file descriptor.")
+		listener, err = net.Listen("tcp", server.Addr)
+	}
+
+	if err != nil {
+		log.Fatalf("listener error: %v", err)
+	}
+
+	go func() {
+		// server.Shutdown() stop Server() immediately, thus server.Serve()
+		err = server.Serve(listener)
+		log.Printf("server.Server err: %v\n", err)
+	}()
+
+	signalHandler()
+	log.Println("signal end")
+}
+
+func signalHandler() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR2)
+	for {
+		sig := <- ch
+		log.Printf("signal: %v", sig)
+
+		// timeout context for shutdown
+		ctx, _ := context.WithTimeout(context.Background(), 20*time.Second)
+		switch sig {
+		case syscall.SIGINT, syscall.SIGTERM:
+			// stop
+			log.Printf("stop")
+			signal.Stop(ch)
+			server.Shutdown(ctx)
+			log.Printf("graceful shutdown")
+			return
+		case syscall.SIGUSR2:
+			// reload
+			log.Printf("reload")
+			err := reload()
+			if err != nil {
+				log.Fatalf("graceful restart error: %v\n", err)
+			}
+			server.Shutdown(ctx)
+			log.Printf("graceful reload")
+			return
+		}
+	}
+}
+
+func reload() error {
+	tl, ok := listener.(*net.TCPListener)
+	if !ok {
+		return errors.New("listener is not tcp listener")
+	}
+
+	f, err := tl.File()
+	if err != nil {
+		return err
+	}
+
+	args := []string{"-graceful"}
+	cmd := exec.Command(os.Args[0], args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	// put socket FD at the first entry
+	cmd.ExtraFiles = []*os.File{f}
+	return cmd.Start()
+}
+```
+
+
+
+# 5. Cookie & Session
+
+## 5.1 Cookie
+
+Cookie机制：
+
+- 浏览器发送请求的时候，自动带上cookie
+- 服务器可设置cookie
+- 只针对单个域名，**不能跨域**
+
+Cookie与登录鉴权：
+
+- 用户登录成功，设置一个 `cookie：username=jack`
+- 用户请求时，浏览器自动把 `cookie: username=jack` 发回服务器
+- 服务器收到请求后，解析cookie中的 username，判断用户是否已登录
+- 如果用户登录，鉴权成功；没有登录则重定向到注册页
+
+Cookie的缺陷：
+
+- 容易被伪造
+- 猜到的用户名，只要用户名带到请求，就被攻破
+
+改进方案：
+
+- 将username生成一个唯一的 uuid
+- 用户请求时，将这个uuid发到服务器
+- 服务端通过查询这个uuid，反查是哪个用户
+
+
+
+## 5.2 Session
+
+Session机制：
+
+- 在服务端生成的id以及保存id对应用户信息的机制，叫做session机制
+- Session和Cookie共同构建了账号鉴权体系
+- Cookie保存在客户端，session保存在服务端
+- 服务端登录成功后，就分配一个无法伪造的sessionid，存储在用户的机器上，以后每次请求的时候，都带上这个sessionid，就可以达到鉴权的目的
+
+
+
+## 5.3 使用Cookie
+
+```go
+// 设置cookie
+sessionId := userSession.Id()
+cookie := &http.Cookie{
+	Name:     CookieSessionId,
+	Value:    sessionId,
+	MaxAge:   CookieMaxAge,		
+    HttpOnly: true,
+	Path:     "/",
+}
+http.SetCookie(w, &cookie)
+
+// 读取cookie
+cookie := http.Request.Cookie("key")
+cookies := http.Request.Cookies()
+```
+
+
+
