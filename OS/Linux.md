@@ -428,10 +428,39 @@ systemctl restart nginx
 
 
 
-## 4.3 journalctl 显示不全
+## 4.3 journalctl
 
 ```bash
+# 显示不全
 journalctl -n 40 -u kubelet.service | vim -
+
+# 按时间倒序显示日志
+journalctl -r
+
+# 显示最近的25行日志
+journalctl -n 25
+
+# 实时查看日志
+journalctl -f
+
+# 内核日志
+journalctl -k
+
+# 常驻进程日志
+journalctl -u ssh
+
+# 指定时间段
+journalctl --since=yesterday --until=now
+journalctl --since "2020-07-10"
+journalctl --since "2020-07-10 15:10:00" --until "2020-07-12"
+
+# 根据UID、GID和PID过滤日志
+journalctl _PID=1234
+
+# -p：日志级别，0-emerg紧急，1-alert警报，2-crit关键，3-错误 4-警告 5-注意 6-普通信息 7-调试消息
+# -x：日志的附加信息，-b：自上次启动，即当前会话以来。
+journalctl -p 3 -xb
+journalctl -p 4..6 -b0
 ```
 
 
@@ -449,6 +478,35 @@ sudo systemctl set-default runlevel3.target
 ```
 
 
+
+## 4.5 日志管理
+
+日志目录：`/var/log/journal/`
+
+```bash
+# 日志磁盘空间
+journalctl --disk-usage
+
+# 日志轮询
+journalctl --rotate
+
+# 清空日志，2s, 2m, 2h, 2w
+journalctl --vacuum-time=2d
+
+# 日志缩小到100MB
+journalctl --vacuum-size=100M
+
+# 限制日志文件数量
+journalctl --vacuum-files=5
+
+# 自动删除日志配置
+vi /etc/systemd/journald.conf
+SystemMaxUse = 1G
+SystemMaxFileSize = 200M
+SystemMaxFiles = 10
+
+systemctl restart systemd-journald
+```
 
 
 
@@ -622,4 +680,53 @@ top -p 1127
 ```
 
 
+
+# 10. 串口
+
+```bash
+# 串口个数
+dmesg | grep ttyS*
+
+# 串口驱动信息
+cat /proc/tty/driver/serial
+
+# 串口波特率
+stty -a -F /dev/ttyS4
+
+# usb
+lsusb
+Bus 001 Device 005: ID 1a86:7523 QinHeng Electronics HL-340 USB-Serial adapter 
+
+modprobe usbserial vendor=0x1a86 product=0x7523
+
+
+# dmesg | grep ttyUSB
+[   32.932894] usb 1-1.3: generic converter now attached to ttyUSB0
+# chmod 777 /dev/ttyUSB0
+# microcom -s 115200 /dev/ttyUSB0
+
+# 查询串口
+stty -F /dev/ttyS0
+
+# 设置串口
+stty -F /dev/ttyS0 speed 115200 cs8 -parenb -cstopb    115200   波特率 8数据位 1停止位 无校验
+
+# 读取数据
+cat /dev/ttyS0
+
+# 发送数据
+echo "test data" > /dev/ttyS0
+```
+
+
+
+# 11. tcpdump
+
+```bash
+tcpdump -i ens3 dst ip port tcp port 5236 and host 172.16.24.13 -w dm.cap
+
+tcpdump tcp -i eth3 src host 192.168.3.107 -w ./a.cap
+
+tcpdump ip host 192.168.3.195 and 192.168.3.155 -w ./a.cap
+```
 

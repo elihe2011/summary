@@ -395,26 +395,16 @@ kubectl delete -f commons.yaml
 
 rm -rf /var/lib/rook
 
-# 非常重要，注意指定自己的磁盘名称，否则可能导致系统问题，比如这里为/dev/sdb
+# 删除分区
+sgdisk --zap-all /dev/sdb
+
+# 清理硬盘数据
 dd if=/dev/zero of=/dev/sdb bs=1M count=100 oflag=direct,dsync
+blkdiscard /dev/sdb
 
-
-
-
-
-#检查硬盘路径
-fdisk -l
-#删除硬盘分区信息
-DISK="/dev/sdb"
-sgdisk --zap-all $DISK
-#清理硬盘数据（hdd硬盘使用dd，ssd硬盘使用blkdiscard，二选一）
-dd if=/dev/zero of="$DISK" bs=1M count=100 oflag=direct,dsync
-blkdiscard $DISK
-#删除原osd的lvm信息（如果单个节点有多个osd，那么就不能用*拼配模糊删除，而根据lsblk -f查询出明确的lv映射信息再具体删除，参照第5项操作）
+# 删除原osd的lvm信息
 ls /dev/mapper/ceph-* | xargs -I% -- dmsetup remove %
 rm -rf /dev/ceph-*
-#重启，sgdisk –zzap-all需要重启后才生效
-reboot
 ```
 
 

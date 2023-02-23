@@ -15,3 +15,11 @@ $ systemctl set-default  graphical.target
 
 
 
+# 2. 防火墙
+
+```bash
+firewall-cmd --zone=public --add-port=1883/tcp --add-port=1883/udp
+
+firewall-cmd --list-all
+```
+

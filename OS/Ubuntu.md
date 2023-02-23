@@ -178,6 +178,8 @@ sudo update-alternatives --config editor
 
 # 4. 远程桌面
 
+## 4.1 xrdp
+
 ```bash
 # 1. 安装相关软件
 apt install vino
@@ -205,6 +207,39 @@ if test -r /etc/profile; then
 
 # 6. 重启xrdp
 systemctl restart xrdp
+```
+
+
+
+## 4.2 vnc
+
+```bash
+apt install x11vnc
+
+# 设置密码
+x11vnc -storepasswd
+
+# 配置文件
+cat <<EOF > /etc/systemd/system/x11vnc.service
+[Unit]
+Description="x11vnc"
+Requires=display-manager.service
+After=display-manager.service
+
+[Service]
+ExecStart=/usr/bin/x11vnc -xkb -noxrecord -noxfixes -noxdamage -display :0 -auth guess -rfbauth /root/.vnc/passwd
+ExecStop=/usr/bin/killall x11vnc
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 开机启动
+systemctl daemon-reload
+systemctl start x11vnc
+systemctl enable x11vnc
 ```
 
 
