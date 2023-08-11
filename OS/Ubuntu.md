@@ -1,4 +1,6 @@
-# 1. apt-get
+# 1. apt
+
+## 1.1 apt-get
 
 ```bash
 # 安装
@@ -26,6 +28,37 @@ apt-cache show vim | grep Version
 # 只下载不安装：/var/cache/apt/archives 
 apt install -d mosquitto
 ```
+
+
+
+## 1.2 apt-key
+
+```bash
+apt-key list
+pub   1024R/B455BEF0 2010-07-29
+uid                  Launchpad clicompanion-nightlies
+
+# 删除
+apt-key del B455BEF0
+```
+
+
+
+## 1.3 add-apt-repository
+
+```bash
+# 添加PPA源
+add-apt-repository ppa:user/ppa-name
+apt-get update
+
+# 删除PPA源
+add-apt-repository -r ppa:user/ppa-name
+
+# 方法二，找到源文件，然后删除
+cd /etc/apt/sources.list.d/
+```
+
+
 
 
 
@@ -324,10 +357,30 @@ make altinstall
 
 # 8. Samba
 
-```bash
-apt install samba
+磁盘分区、格式化、挂载：
 
-systemctl status smbd
+```bash
+fdisk /dev/vdb
+
+mkfs.ext4 /dev/vdb1
+
+mkdir -p /data
+
+cat >> /etc/fstab <<EOF
+/dev/vdb1              /data                    ext4    defaults        0 0
+EOF
+
+mount -a
+
+mount -l | grep /data
+```
+
+
+
+安装 samba：
+
+```bash
+apt install samba -y
 
 netstat -tulnp | grep smbd
 tcp        0      0 0.0.0.0:445             0.0.0.0:*               LISTEN      18039/smbd
@@ -336,20 +389,20 @@ tcp6       0      0 :::445                  :::*                    LISTEN      
 tcp6       0      0 :::139                  :::*                    LISTEN      18039/smbd
 
 
-smbpasswd -a smbuser
+smbpasswd -a root    # 密码root
 
 mkdir -p /data
 chmod 755 /data
-chown smbuser /data
+chown root /data
 
 
 vi /etc/samba/smb.conf 
 
-[winshare]
+[data]
    path = /data
    browseable = yes
    read only = no
-   valid user = smbuser
+   valid user = root
    
 
 systemctl restart smbd
@@ -479,5 +532,44 @@ Can't load /root/.rnd into RNG
 ```bash
 $ vi /etc/ssl/openssl.cnf
 #RANDFILE               = $ENV::HOME/.rnd
+```
+
+
+
+## 4. apt 操作被锁定
+
+```bash
+E: Could not get lock /var/lib/dpkg/lock-frontend - open (11: Resource temporarily unavailable)  
+E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend),   
+ is another process using it?
+```
+
+问题根因：
+
+1. 'Synaptic Package Manager' or 'Software Updater' is open.
+2. Some apt command is running in Terminal.
+3. Some apt process is running in background.
+
+解决办法：
+
+```bash
+killall apt apt-get
+
+rm /var/lib/apt/lists/lock
+rm /var/cache/apt/archives/lock
+rm /var/lib/dpkg/lock*
+
+dpkg --configure -a
+
+apt update
+```
+
+
+
+解决自动更新：
+
+```bash
+vi /etc/apt/apt.conf.d/10periodic
+APT::Periodic::Update-Package-Lists "0";
 ```
 

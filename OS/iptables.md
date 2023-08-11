@@ -323,3 +323,23 @@ iptables -I INPUT -p tcp --syn --dport 80 -m connlimit --connlimit-above 100 -j 
 iptables -I INPUT -m limit --limit 3/hour --limit-burst 10 -j ACCEPT # limit模块; --limit-burst 默认为5
 ```
 
+
+
+# 3. 总结
+
+## 3.1 规则管理
+
+```bash
+$ iptables -t nat -A OUTPUT -p tcp --dport 10350 -j DNAT --to 192.168.3.103:30003
+
+$ iptables -L -t nat -n --line-number | grep OUTPUT -A 5
+Chain OUTPUT (policy ACCEPT)
+num  target     prot opt source               destination
+1    KUBE-PORTALS-HOST  all  --  0.0.0.0/0            0.0.0.0/0            /* handle ClusterIPs; NOTE: this must be before the NodePort rules */
+2    DOCKER     all  --  0.0.0.0/0           !127.0.0.0/8          ADDRTYPE match dst-type LOCAL
+3    KUBE-NODEPORT-HOST  all  --  0.0.0.0/0            0.0.0.0/0            ADDRTYPE match dst-type LOCAL /* handle service NodePorts; NOTE: this must be the last rule in the chain */
+4    DNAT       tcp  --  0.0.0.0/0            0.0.0.0/0            tcp dpt:10350 to:192.168.3.103:30003
+
+$ iptables -t nat -D OUTPUT 4
+```
+
