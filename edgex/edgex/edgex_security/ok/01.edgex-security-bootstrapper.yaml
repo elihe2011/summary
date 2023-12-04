@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-security-bootstrapper
+  name: edgex-security-bootstrapper
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      org.edgexfoundry.service: edgex-security-bootstrapper
+  template:
+    metadata:
+      labels:
+        org.edgexfoundry.service: edgex-security-bootstrapper
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/edge
+                operator: DoesNotExist
+      containers:
+      - name: edgex-security-bootstrapper
+        image: edgexfoundry/security-bootstrapper-arm64:2.1.1
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - configMapRef:
+            name: edgex-config
+        ports:
+        - containerPort: 54321
+          protocol: TCP
+        - containerPort: 54329
+          protocol: TCP
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+      hostname: edgex-security-bootstrapper
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-security-bootstrapper
+  name: edgex-security-bootstrapper
+spec:
+  type: ClusterIP
+  selector:
+    org.edgexfoundry.service: edgex-security-bootstrapper
+  ports:
+  - name: tcp54321
+    port: 54321
+    targetPort: 54321
+  - name: tcp54329
+    port: 54329
+    targetPort: 54329
+  
+  

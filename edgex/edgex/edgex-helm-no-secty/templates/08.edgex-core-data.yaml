@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-core-data
+  name: edgex-core-data
+spec:
+  replicas: {{ .Values.edgex.replicas.core.data }}
+  selector:
+    matchLabels:
+      org.edgexfoundry.service: edgex-core-data
+  template:
+    metadata:
+      labels:
+        org.edgexfoundry.service: edgex-core-data
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/edge
+                {{- if .Values.edgex.affinity.core.data.edgeNode }}
+                operator: Exists
+                {{- else }}
+                operator: DoesNotExist
+                {{- end }}
+      containers:
+      - name: edgex-core-data
+        image: {{ .Values.edgex.image.core.data }}
+        imagePullPolicy: IfNotPresent
+        command: ["/core-data", "-cp=consul.http://edgex-core-consul.$(NAMESPACE).svc:8500", "--registry", "--confdir=/res"]
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLIENTS_CORE_COMMAND_HOST
+          value: edgex-core-command.$(NAMESPACE).svc
+        - name: CLIENTS_CORE_DATA_HOST
+          value: edgex-core-data
+        - name: CLIENTS_CORE_METADATA_HOST
+          value: edgex-core-metadata.$(NAMESPACE).svc
+        - name: CLIENTS_SUPPORT_NOTIFICATIONS_HOST
+          value: edgex-support-notifications.$(NAMESPACE).svc
+        - name: CLIENTS_SUPPORT_SCHEDULER_HOST
+          value: edgex-support-scheduler.$(NAMESPACE).svc
+        - name: DATABASES_PRIMARY_HOST
+          value: edgex-redis.$(NAMESPACE).svc
+        - name: EDGEX_SECURITY_SECRET_STORE
+          value: "false"
+        - name: MESSAGEQUEUE_HOST
+          value: edgex-redis.$(NAMESPACE).svc
+        - name: REGISTRY_HOST
+          value: edgex-core-consul.$(NAMESPACE).svc
+        - name: SERVICE_HOST
+          value: edgex-core-data
+        ports:
+        - containerPort: 5563
+          protocol: TCP
+        - containerPort: 59880
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 59880
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          failureThreshold: 3
+          periodSeconds: 5
+          successThreshold: 1
+          tcpSocket:
+            port: 59880
+          timeoutSeconds: 1
+        {{- if .Values.edgex.resources.core.data.enforceLimits }}
+        resources:
+          limits:
+            memory: {{ .Values.edgex.resources.core.data.limits.memory }}
+            cpu: {{ .Values.edgex.resources.core.data.limits.cpu }}
+          requests:
+            memory: {{ .Values.edgex.resources.core.data.requests.memory }}
+            cpu: {{ .Values.edgex.resources.core.data.requests.cpu }}
+        {{- end}}
+        securityContext:
+          runAsUser: 2002
+          runAsGroup: 2001
+      hostname: edgex-core-data
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-core-data
+  name: edgex-core-data
+spec:
+  type: {{ .Values.expose.core.data.type }}
+  selector:
+    org.edgexfoundry.service: edgex-core-data
+  ports:     
+  - name: tcp5563
+    port: 5563
+    targetPort: 5563
+  - name: tcp59880
+    port: 59880
+    targetPort: 59880
+    {{- if .Values.expose.core.data.nodePort }}
+    nodePort: {{ .Values.expose.core.data.nodePort }}
+    {{- end}}    

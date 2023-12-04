@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-support-notifications
+  name: edgex-support-notifications
+spec:
+  replicas: {{ .Values.edgex.replicas.support.notifications }}
+  selector:
+    matchLabels:
+      org.edgexfoundry.service: edgex-support-notifications
+  template:
+    metadata:
+      labels:
+        org.edgexfoundry.service: edgex-support-notifications
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/edge
+                {{- if .Values.edgex.affinity.support.notifications.edgeNode }}
+                operator: Exists
+                {{- else }}
+                operator: DoesNotExist
+                {{- end }}
+      containers:
+      - name: edgex-support-notifications
+        image: {{ .Values.edgex.image.support.notifications }}
+        imagePullPolicy: IfNotPresent
+        command: ["/support-notifications", "-cp=consul.http://edgex-core-consul.$(NAMESPACE).svc:8500", "--registry", "--confdir=/res"]
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLIENTS_CORE_COMMAND_HOST
+          value: edgex-core-command.$(NAMESPACE).svc
+        - name: CLIENTS_CORE_DATA_HOST
+          value: edgex-core-data.$(NAMESPACE).svc
+        - name: CLIENTS_CORE_METADATA_HOST
+          value: edgex-core-metadata.$(NAMESPACE).svc
+        - name: CLIENTS_SUPPORT_NOTIFICATIONS_HOST
+          value: edgex-support-notifications
+        - name: CLIENTS_SUPPORT_SCHEDULER_HOST
+          value: edgex-support-scheduler.$(NAMESPACE).svc
+        - name: DATABASES_PRIMARY_HOST
+          value: edgex-redis.$(NAMESPACE).svc
+        - name: EDGEX_SECURITY_SECRET_STORE
+          value: "false"
+        - name: REGISTRY_HOST
+          value: edgex-core-consul.$(NAMESPACE).svc
+        - name: SERVICE_HOST
+          value: edgex-support-notifications
+        ports:
+        - containerPort: 59860
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 59860
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          failureThreshold: 3
+          periodSeconds: 5
+          successThreshold: 1
+          tcpSocket:
+            port: 59860
+          timeoutSeconds: 1
+        {{- if .Values.edgex.resources.support.notifications.enforceLimits }}
+        resources:
+          limits:
+            memory: {{ .Values.edgex.resources.support.notifications.limits.memory }}
+            cpu: {{ .Values.edgex.resources.support.notifications.limits.cpu }}
+          requests:
+            memory: {{ .Values.edgex.resources.support.notifications.requests.memory }}
+            cpu: {{ .Values.edgex.resources.support.notifications.requests.cpu }}
+        {{- end}}
+        securityContext:
+          runAsUser: 2002
+          runAsGroup: 2001
+      hostname: edgex-support-notifications
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-support-notifications
+  name: edgex-support-notifications
+spec:
+  type: {{ .Values.expose.support.notifications.type }}
+  selector:
+    org.edgexfoundry.service: edgex-support-notifications
+  ports:     
+  - name: tcp59860
+    port: 59860
+    targetPort: 59860
+    {{- if .Values.expose.support.notifications.nodePort }}
+    nodePort: {{ .Values.expose.support.notifications.nodePort }}
+    {{- end}}   

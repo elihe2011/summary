@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-device-rest
+  name: edgex-device-rest
+spec:
+  replicas: {{ .Values.edgex.replicas.device.rest }}
+  selector:
+    matchLabels:
+      org.edgexfoundry.service: edgex-device-rest
+  template:
+    metadata:
+      labels:
+        org.edgexfoundry.service: edgex-device-rest
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/edge
+                {{- if .Values.edgex.affinity.device.rest.edgeNode }}
+                operator: Exists
+                {{- else }}
+                operator: DoesNotExist
+                {{- end }}
+      containers:
+      - name: edgex-device-rest
+        image: {{ .Values.edgex.image.device.rest }}
+        imagePullPolicy: IfNotPresent
+        command: ["/device-rest", "-cp=consul.http://edgex-core-consul.$(NAMESPACE).svc:8500", "--registry", "--confdir=/res"]
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLIENTS_CORE_COMMAND_HOST
+          value: edgex-core-command.$(NAMESPACE).svc
+        - name: CLIENTS_CORE_DATA_HOST
+          value: edgex-core-data.$(NAMESPACE).svc
+        - name: CLIENTS_CORE_METADATA_HOST
+          value: edgex-core-metadata.$(NAMESPACE).svc
+        - name: CLIENTS_SUPPORT_NOTIFICATIONS_HOST
+          value: edgex-support-notifications.$(NAMESPACE).svc
+        - name: CLIENTS_SUPPORT_SCHEDULER_HOST
+          value: edgex-support-scheduler.$(NAMESPACE).svc
+        - name: DATABASES_PRIMARY_HOST
+          value: edgex-redis.$(NAMESPACE).svc
+        - name: EDGEX_SECURITY_SECRET_STORE
+          value: "false"
+        - name: MESSAGEQUEUE_HOST
+          value: edgex-redis.$(NAMESPACE).svc
+        - name: REGISTRY_HOST
+          value: edgex-core-consul.$(NAMESPACE).svc
+        - name: SERVICE_HOST
+          value: edgex-device-rest
+        ports:
+        - containerPort: 59986
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 59986
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          failureThreshold: 3
+          periodSeconds: 5
+          successThreshold: 1
+          tcpSocket:
+            port: 59986
+          timeoutSeconds: 1
+        {{- if .Values.edgex.resources.device.rest.enforceLimits }}
+        resources:
+          limits:
+            memory: {{ .Values.edgex.resources.device.rest.limits.memory }}
+            cpu: {{ .Values.edgex.resources.device.rest.limits.cpu }}
+          requests:
+            memory: {{ .Values.edgex.resources.device.rest.requests.memory }}
+            cpu: {{ .Values.edgex.resources.device.rest.requests.cpu }}
+        {{- end}}
+        securityContext:
+          runAsUser: 2002
+          runAsGroup: 2001
+      hostname: edgex-device-rest
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-device-rest
+  name: edgex-device-rest
+spec:
+  type: {{ .Values.expose.device.rest.type }}
+  selector:
+    org.edgexfoundry.service: edgex-device-rest
+  ports:  
+  - name: tcp59986
+    port: 59986
+    targetPort: 59986
+    {{- if .Values.expose.device.rest.nodePort }}
+    nodePort: {{ .Values.expose.device.rest.nodePort }}
+    {{- end}}    

@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-support-notifications
+  name: edgex-support-notifications
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      org.edgexfoundry.service: edgex-support-notifications
+  template:
+    metadata:
+      labels:
+        org.edgexfoundry.service: edgex-support-notifications
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/edge
+                operator: DoesNotExist
+      initContainers:
+      - name: edgex-security-bootstrapper-init
+        image: edgexfoundry/security-bootstrapper-arm64:2.1.1
+        command: ["/bin/sh","-c","cp -pr /edgex-init/* /edgex-init-share/"]
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /edgex-init-share
+          name: edgex-init-share
+      containers:
+      - name: edgex-support-notifications
+        image: edgexfoundry/support-notifications-arm64:2.1.1
+        imagePullPolicy: IfNotPresent
+        #command: ["/edgex-init/ready_to_run_wait_install.sh"]
+        #args: ["/support-notifications", "-cp=consul.http://edgex-core-consul.default.svc:8500", "--registry", "--confdir=/res"]
+        command: ["/usr/bin/dumb-init"]
+        args: ["/bin/sh", "-x", "/edgex-init/ready_to_run_wait_install.sh", "/support-notifications", "-cp=consul.http://edgex-core-consul.default.svc:8500", "--registry", "--confdir=/res"]
+        envFrom:
+        - configMapRef:
+            name: edgex-config
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLIENTS_SUPPORT_NOTIFICATIONS_HOST
+          value: edgex-support-notifications
+        - name: SERVICE_HOST
+          value: edgex-support-notifications
+        volumeMounts:
+        - mountPath: /edgex-init
+          name: edgex-init-share
+        - mountPath: /tmp/edgex/secrets/support-notifications
+          name: secrets-support-notifications
+        ports:
+        - containerPort: 59860
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /api/v1/ping
+            port: 48060
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 15
+          successThreshold: 1
+          timeoutSeconds: 1
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /api/v1/ping
+            port: 48060
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 15
+          successThreshold: 1
+          timeoutSeconds: 1
+        securityContext:
+          runAsUser: 2002
+          runAsGroup: 2001
+      hostname: edgex-support-notifications
+      restartPolicy: Always
+      volumes:
+      - name: edgex-init-share
+        emptyDir: {}
+      - name: secrets-support-notifications
+        hostPath:
+          path: /data/edgex/secrets/support-notifications
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-support-notifications
+  name: edgex-support-notifications
+spec:
+  type: ClusterIP
+  selector:
+    org.edgexfoundry.service: edgex-support-notifications
+  ports:
+  - name: tcp59860
+    port: 59860
+    targetPort: 59860 
+

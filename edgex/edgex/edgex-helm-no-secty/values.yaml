@@ -1,0 +1,231 @@
+# 存储配置
+storage:
+  core:
+    consul:
+      class: local
+      configSize: 20Mi
+      dataSize: 100Mi
+  support:
+    rulesengine:
+      class: local
+      size: 500Mi
+  redis:
+    class: local
+    size: 1Gi
+
+# 应用安装
+edgex:
+  image:
+    core:
+      consul: consul:1.10.3
+      metadata: edgexfoundry/core-metadata-arm64:2.1.1
+      command: edgexfoundry/core-command-arm64:2.1.1
+      data: edgexfoundry/core-data-arm64:2.1.1
+    support:
+      notifications: edgexfoundry/support-notifications-arm64:2.1.1
+      rulesengine: lfedge/ekuiper:1.4.4-alpine
+      scheduler: edgexfoundry/support-scheduler-arm64:2.1.1
+    appservice:
+      rules: edgexfoundry/app-service-configurable-arm64:2.1.1
+    device:
+      virtual: edgexfoundry/device-virtual-arm64:2.1.1
+      rest: edgexfoundry/device-rest-arm64:2.1.1
+    ui: edgexfoundry/edgex-ui-arm64:2.1.0
+    system: edgexfoundry/sys-mgmt-agent-arm64:2.1.1
+    redis: redis:6.2.6-alpine
+    
+  replicas:
+    core:
+      command: 1
+      data: 1
+      metadata: 1
+      consul: 1
+    support:
+      notifications: 1
+      rulesengine: 1
+      scheduler: 1
+    appservice:
+      rules: 1
+    device:
+      virtual: 1
+      rest: 1
+    ui: 1
+    system: 1
+    
+  affinity:
+    core:
+      command: 
+        edgeNode: false
+      data:  
+        edgeNode: false
+      metadata: 
+        edgeNode: false
+      consul: 
+        edgeNode: false
+    support:
+      notifications: 
+        edgeNode: false
+      rulesengine: 
+        edgeNode: false
+      scheduler: 
+        edgeNode: false
+    appservice:
+      rules: 
+        edgeNode: false
+    device:
+      virtual: 
+        edgeNode: true
+      rest: 
+        edgeNode: true
+    ui: 
+      edgeNode: false
+    system: 
+      edgeNode: false
+    redis:
+      edgeNode: false
+      
+  resources:
+    core:
+      command:
+        enforceLimits: false
+        limits:
+          cpu: 1
+          memory: 512Mi
+        requests:
+          cpu: 0.5
+          memory: 256Mi
+      data:
+        enforceLimits: false
+        limits:
+          cpu: 1
+          memory: 512Mi
+        requests:
+          cpu: 0.5
+          memory: 256Mi
+      metadata:
+        enforceLimits: false
+        limits:
+          cpu: 1
+          memory: 512Mi
+        requests:
+          cpu: 0.5
+          memory: 256Mi
+      consul:
+        enforceLimits: false
+        limits:
+          cpu: 1
+          memory: 512Mi
+        requests:
+          cpu: 0.5
+          memory: 256Mi
+    support:
+      notifications:
+        enforceLimits: false
+        limits:
+          cpu: 1
+          memory: 512Mi
+        requests:
+          cpu: 0.5
+          memory: 256Mi
+      rulesengine:
+        enforceLimits: false
+        limits:
+          cpu: 1
+          memory: 512Mi
+        requests:
+          cpu: 0.5
+          memory: 256Mi
+      scheduler:
+        enforceLimits: false
+        limits:
+          cpu: 1
+          memory: 512Mi
+        requests:
+          cpu: 0.5
+          memory: 256Mi
+    appservice:
+      rules:
+        enforceLimits: false
+        limits:
+          cpu: 1
+          memory: 512Mi
+        requests:
+          cpu: 0.5
+          memory: 256Mi
+    device:
+      virtual:
+        enforceLimits: false
+        limits:
+          cpu: 1
+          memory: 512Mi
+        requests:
+          cpu: 0.5
+          memory: 256Mi
+      rest:
+        enforceLimits: false
+        limits:
+          cpu: 1
+          memory: 512Mi
+        requests:
+          cpu: 0.5
+          memory: 256Mi
+    ui:
+      enforceLimits: false
+      limits:
+        cpu: 1
+        memory: 512Mi
+      requests:
+        cpu: 0.5
+        memory: 256Mi
+    system:
+      enforceLimits: false
+      limits:
+        cpu: 1
+        memory: 512Mi
+      requests:
+        cpu: 0.5
+        memory: 256Mi
+    redis:
+      enforceLimits: true
+      requests:
+        cpu: 0.5
+        memory: 512Mi
+      limits:
+        cpu: 0.5
+        memory: 1024Mi
+
+# 服务暴露
+expose:
+  core:
+    command:
+      type: ClusterIP
+    data:
+      type: ClusterIP
+    metadata:
+      type: ClusterIP
+    consul:
+      type: NodePort
+      nodePort: 30850
+  support:
+    notifications:
+      type: ClusterIP
+    rulesengine:
+      type: ClusterIP
+    scheduler:
+      type: ClusterIP
+  appservice:
+    rules:
+      type: ClusterIP
+  device:
+    virtual:
+      type: ClusterIP
+    rest:
+      type: ClusterIP
+  ui:
+    type: NodePort
+    nodePort: 30400
+  system:
+    type: ClusterIP
+  redis:
+    type: NodePort
+    nodePort: 30379

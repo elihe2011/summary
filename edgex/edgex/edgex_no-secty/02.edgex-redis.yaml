@@ -1,0 +1,156 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+data:
+  redis.conf: |-
+    dir /data
+    port 6379
+    bind 0.0.0.0
+    appendonly yes
+    protected-mode no
+    pidfile /data/redis-6379.pid
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pv
+spec:
+  storageClassName: nfs-storage
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-redis
+  name: edgex-redis
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      org.edgexfoundry.service: edgex-redis
+  template:
+    metadata:
+      labels:
+        org.edgexfoundry.service: edgex-redis
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/edge
+                operator: DoesNotExist
+      initContainers:
+      - name: system-init
+        image: busybox:1.28
+        imagePullPolicy: IfNotPresent
+        command:
+        - "sh"
+        - "-c"
+        - "echo 2048 > /proc/sys/net/core/somaxconn && echo never > /sys/kernel/mm/transparent_hugepage/enabled"
+        securityContext:
+          privileged: true
+          runAsUser: 0
+        volumeMounts:
+        - name: sys
+          mountPath: /sys
+      containers:
+      - name: edgex-redis
+        image: redis:6.2.6-alpine
+        imagePullPolicy: IfNotPresent
+        command:
+        - "sh"
+        - "-c"
+        - "redis-server /usr/local/etc/redis/redis.conf"
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLIENTS_CORE_COMMAND_HOST
+          value: edgex-core-command.$(NAMESPACE).svc
+        - name: CLIENTS_CORE_DATA_HOST
+          value: edgex-core-data.$(NAMESPACE).svc
+        - name: CLIENTS_CORE_METADATA_HOST
+          value: edgex-core-metadata.$(NAMESPACE).svc
+        - name: CLIENTS_SUPPORT_NOTIFICATIONS_HOST
+          value: edgex-support-notifications.$(NAMESPACE).svc
+        - name: CLIENTS_SUPPORT_SCHEDULER_HOST
+          value: edgex-support-scheduler.$(NAMESPACE).svc
+        - name: DATABASES_PRIMARY_HOST
+          value: edgex-redis
+        - name: EDGEX_SECURITY_SECRET_STORE
+          value: "false"
+        - name: REGISTRY_HOST
+          value: edgex-core-consul.$(NAMESPACE).svc
+        volumeMounts:
+        - mountPath: /usr/local/etc/redis/redis.conf
+          name: config
+          subPath: redis.conf
+        - mountPath: /data
+          name: data
+        ports:
+        - containerPort: 6379
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          failureThreshold: 3
+          periodSeconds: 5
+          successThreshold: 1
+          tcpSocket:
+            port: 6379
+          timeoutSeconds: 1
+      hostname: edgex-redis
+      restartPolicy: Always
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: redis-pv
+      - name: config
+        configMap:
+          name: redis-config
+      - name: sys
+        hostPath:
+          path: /sys
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-redis
+  name: edgex-redis
+spec:
+  type: ClusterIP
+  selector:
+    org.edgexfoundry.service: edgex-redis
+  ports:     
+  - name: tcp6379
+    port: 6379
+    targetPort: 6379  
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-redis
+  name: edgex-redis-nodeport
+spec:
+  type: NodePort
+  selector:
+    org.edgexfoundry.service: edgex-redis
+  ports:     
+  - name: tcp6379
+    port: 6379
+    targetPort: 6379  
+    nodePort: 30079

@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-app-rules-engine
+  name: edgex-app-rules-engine
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      org.edgexfoundry.service: edgex-app-rules-engine
+  template:
+    metadata:
+      labels:
+        org.edgexfoundry.service: edgex-app-rules-engine
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/edge
+                operator: DoesNotExist
+      containers:
+      - name: edgex-app-rules-engine
+        image: edgexfoundry/app-service-configurable-arm64:2.1.1
+        imagePullPolicy: IfNotPresent
+        command: ["/app-service-configurable", "-cp=consul.http://edgex-core-consul.$(NAMESPACE).svc:8500", "--registry", "--confdir=/res"]
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLIENTS_CORE_COMMAND_HOST
+          value: edgex-core-command.$(NAMESPACE).svc
+        - name: CLIENTS_CORE_DATA_HOST
+          value: edgex-core-data.$(NAMESPACE).svc
+        - name: CLIENTS_CORE_METADATA_HOST
+          value: edgex-core-metadata.$(NAMESPACE).svc
+        - name: CLIENTS_SUPPORT_NOTIFICATIONS_HOST
+          value: edgex-support-notifications.$(NAMESPACE).svc
+        - name: CLIENTS_SUPPORT_SCHEDULER_HOST
+          value: edgex-support-scheduler.$(NAMESPACE).svc
+        - name: DATABASES_PRIMARY_HOST
+          value: edgex-redis.$(NAMESPACE).svc
+        - name: EDGEX_PROFILE
+          value: rules-engine
+        - name: EDGEX_SECURITY_SECRET_STORE
+          value: "false"
+        - name: REGISTRY_HOST
+          value: edgex-core-consul.$(NAMESPACE).svc
+        - name: SERVICE_HOST
+          value: edgex-app-rules-engine
+        - name: TRIGGER_EDGEXMESSAGEBUS_PUBLISHHOST_HOST
+          value: edgex-redis.$(NAMESPACE).svc  
+        - name: TRIGGER_EDGEXMESSAGEBUS_SUBSCRIBEHOST_HOST
+          value: edgex-redis.$(NAMESPACE).svc 
+        ports:
+        - containerPort: 59701
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 59701
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          failureThreshold: 3
+          periodSeconds: 5
+          successThreshold: 1
+          tcpSocket:
+            port: 59701
+          timeoutSeconds: 1
+        securityContext:
+          runAsUser: 2002
+          runAsGroup: 2001
+      hostname: edgex-app-rules-engine
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-app-rules-engine
+  name: edgex-app-rules-engine
+spec:
+  type: ClusterIP
+  selector:
+    org.edgexfoundry.service: edgex-app-rules-engine
+  ports:  
+  - name: tcp59701
+    port: 59701
+    targetPort: 59701     

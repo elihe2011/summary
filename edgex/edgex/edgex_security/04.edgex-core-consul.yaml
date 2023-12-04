@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-core-consul
+  name: edgex-core-consul
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      org.edgexfoundry.service: edgex-core-consul
+  template:
+    metadata:
+      labels:
+        org.edgexfoundry.service: edgex-core-consul
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/edge
+                operator: DoesNotExist
+      initContainers:
+      - name: edgex-security-bootstrapper-init
+        image: edgexfoundry/security-bootstrapper-arm64:2.1.1
+        command: ["/bin/sh","-c","cp -pr /edgex-init/* /edgex-init-share/"]
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /edgex-init-share
+          name: edgex-init-share
+      containers:
+      - name: edgex-core-consul
+        image: consul:1.10.3
+        imagePullPolicy: IfNotPresent
+        command: ["/edgex-init/consul_wait_install.sh"]
+        args: ["agent", "-ui", "-bootstrap", "-server", "-client", "0.0.0.0"]
+        envFrom:
+        - configMapRef:
+            name: edgex-config
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: STAGEGATE_REGISTRY_HOST
+          value: edgex-core-consul
+        volumeMounts:
+        - mountPath: /edgex-init
+          name: edgex-init-share
+        - mountPath: /consul/config
+          name: consul-config
+        - mountPath: /consul/data
+          name: consul-data
+        - mountPath: /tmp/edgex/secrets/edgex-consul
+          name: tmp-edgex-consul
+        - mountPath: /tmp/edgex/secrets/consul-acl-token
+          name: consul-acl-token
+        ports:
+        - containerPort: 8400
+          protocol: TCP
+        - containerPort: 8500
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 8500
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        startupProbe:
+          failureThreshold: 30
+          initialDelaySeconds: 1
+          periodSeconds: 5
+          successThreshold: 1
+          tcpSocket:
+            port: 8500
+          timeoutSeconds: 1
+        livenessProbe:
+          failureThreshold: 3
+          periodSeconds: 5
+          successThreshold: 1
+          tcpSocket:
+            port: 8500
+          timeoutSeconds: 1
+        securityContext:
+          runAsUser: 0
+      hostname: edgex-core-consul
+      restartPolicy: Always
+      volumes:
+      - name: edgex-init-share
+        emptyDir: {}
+      - name: consul-config
+        persistentVolumeClaim:
+          claimName: consul-config
+      - name: consul-data
+        persistentVolumeClaim:
+          claimName: consul-data
+      - name: tmp-edgex-consul
+        hostPath:
+          path: /tmp/edgex/secrets/edgex-consul
+          type: DirectoryOrCreate
+      - name: consul-acl-token
+        hostPath:
+          path: /tmp/edgex/secrets/consul-acl-token
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-core-consul
+  name: edgex-core-consul
+spec:
+  type: ClusterIP
+  selector:
+    org.edgexfoundry.service: edgex-core-consul
+  ports:
+  - name: tcp8400
+    port: 8400
+    targetPort: 8400      
+  - name: tcp8500
+    port: 8500
+    targetPort: 8500  
+

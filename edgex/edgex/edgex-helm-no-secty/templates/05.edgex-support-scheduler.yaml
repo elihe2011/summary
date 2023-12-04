@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-support-scheduler
+  name: edgex-support-scheduler
+spec:
+  replicas: {{ .Values.edgex.replicas.support.scheduler }}
+  selector:
+    matchLabels:
+      org.edgexfoundry.service: edgex-support-scheduler
+  template:
+    metadata:
+      labels:
+        org.edgexfoundry.service: edgex-support-scheduler
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/edge
+                {{- if .Values.edgex.affinity.support.scheduler.edgeNode }}
+                operator: Exists
+                {{- else }}
+                operator: DoesNotExist
+                {{- end }}
+      containers:
+      - name: edgex-support-scheduler
+        image: {{ .Values.edgex.image.support.scheduler }}
+        imagePullPolicy: IfNotPresent
+        command: ["/support-scheduler", "-cp=consul.http://edgex-core-consul.$(NAMESPACE).svc:8500", "--registry", "--confdir=/res"]
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLIENTS_CORE_COMMAND_HOST
+          value: edgex-core-command.$(NAMESPACE).svc
+        - name: CLIENTS_CORE_DATA_HOST
+          value: edgex-core-data.$(NAMESPACE).svc
+        - name: CLIENTS_CORE_METADATA_HOST
+          value: edgex-core-metadata.$(NAMESPACE).svc
+        - name: CLIENTS_SUPPORT_NOTIFICATIONS_HOST
+          value: edgex-support-notifications.$(NAMESPACE).svc
+        - name: CLIENTS_SUPPORT_SCHEDULER_HOST
+          value: edgex-support-scheduler
+        - name: DATABASES_PRIMARY_HOST
+          value: edgex-redis.$(NAMESPACE).svc
+        - name: EDGEX_SECURITY_SECRET_STORE
+          value: "false"
+        - name: INTERVALACTIONS_SCRUBAGED_HOST
+          value: edgex-core-data.$(NAMESPACE).svc
+        - name: INTERVALACTIONS_SCRUBPUSHED_HOST
+          value: edgex-core-data.$(NAMESPACE).svc
+        - name: REGISTRY_HOST
+          value: edgex-core-consul.$(NAMESPACE).svc
+        - name: SERVICE_HOST
+          value: edgex-support-scheduler
+        ports:
+        - containerPort: 59861
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 59861
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          failureThreshold: 3
+          periodSeconds: 5
+          successThreshold: 1
+          tcpSocket:
+            port: 59861
+          timeoutSeconds: 1
+        {{- if .Values.edgex.resources.support.scheduler.enforceLimits }}
+        resources:
+          limits:
+            memory: {{ .Values.edgex.resources.support.scheduler.limits.memory }}
+            cpu: {{ .Values.edgex.resources.support.scheduler.limits.cpu }}
+          requests:
+            memory: {{ .Values.edgex.resources.support.scheduler.requests.memory }}
+            cpu: {{ .Values.edgex.resources.support.scheduler.requests.cpu }}
+        {{- end}}
+        securityContext:
+          runAsUser: 2002
+          runAsGroup: 2001
+      hostname: edgex-support-scheduler
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-support-scheduler
+  name: edgex-support-scheduler
+spec:
+  type: {{ .Values.expose.support.scheduler.type }}
+  selector:
+    org.edgexfoundry.service: edgex-support-scheduler
+  ports:     
+  - name: tcp59861
+    port: 59861
+    targetPort: 59861
+    {{- if .Values.expose.support.scheduler.nodePort }}
+    nodePort: {{ .Values.expose.support.scheduler.nodePort }}
+    {{- end}}

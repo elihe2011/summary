@@ -1,0 +1,132 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-vault
+  name: edgex-vault
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      org.edgexfoundry.service: edgex-vault
+  template:
+    metadata:
+      labels:
+        org.edgexfoundry.service: edgex-vault
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/edge
+                operator: DoesNotExist
+      initContainers:
+      - name: edgex-security-bootstrapper-init
+        image: edgexfoundry/security-bootstrapper-arm64:2.1.1
+        command: ["/bin/sh","-c","cp -pr /edgex-init/* /edgex-init-share/"]
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /edgex-init-share
+          name: edgex-init-share
+      containers:
+      - name: edgex-vault
+        image: vault:1.8.4
+        imagePullPolicy: IfNotPresent
+        command: ["/edgex-init/vault_wait_install.sh"]
+        args: ["server"]
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        envFrom:
+        - configMapRef:
+            name: edgex-config
+        env:
+        - name: VAULT_ADDR
+          value: http://edgex-vault:8200
+        - name: VAULT_API_ADDR
+          value: http://edgex-vault:8200
+        - name: VAULT_LOCAL_CONFIG
+          value: '{"backend":{"consul":{"address":"http://edgex-core-consul.default.svc:8500","path":"vault/"}},"listener":{"tcp":{"address":"0.0.0.0:8200","tls_disable":1}},"ui":true, "disable_mlock":true}'
+        volumeMounts:
+        - mountPath: /edgex-init
+          name: edgex-init-share
+        - mountPath: /vault/config
+          name: vault-config
+        - mountPath: /vault/file
+          name: vault-file
+        - mountPath: /vault/logs
+          name: vault-logs
+        ports:
+        - containerPort: 8200
+          name: http
+        - containerPort: 8201
+          name: https-internal
+        - containerPort: 8202
+          name: http-rep
+        readinessProbe:
+          tcpSocket:
+            port: 8200
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 8200
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        securityContext:
+          capabilities:
+            add: ["IPC_LOCK"]
+      hostname: edgex-vault
+      restartPolicy: Always
+      volumes:
+      - name: edgex-init-share
+        emptyDir: {}
+      - name: vault-config
+        emptyDir:
+          medium: Memory
+      - name: vault-file
+        emptyDir: {}
+      - name: vault-logs
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-vault
+  name: edgex-vault
+spec:
+  type: ClusterIP
+  selector:
+    org.edgexfoundry.service: edgex-vault
+  ports:
+  - name: tcp8200
+    port: 8200
+    targetPort: 8200      
+  - name: tcp8201
+    port: 8201
+    targetPort: 8201  
+  - name: tcp8202
+    port: 8202
+    targetPort: 8202
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    org.edgexfoundry.service: edgex-vault
+  name: edgex-vault-nodeport
+spec:
+  type: NodePort
+  selector:
+    org.edgexfoundry.service: edgex-vault
+  ports:
+  - name: tcp8200
+    port: 8200
+    targetPort: 8200
+    nodePort: 32000
+        

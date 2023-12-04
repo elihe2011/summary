@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: edgex-core-command-config
+  namespace: default
+data:
+  API_GATEWAY_HOST: edgex-kong.default.svc
+  API_GATEWAY_STATUS_PORT: '8100'
+  CLIENTS_CORE_COMMAND_HOST: edgex-core-command.default.svc
+  CLIENTS_CORE_DATA_HOST: edgex-core-data.default.svc
+  CLIENTS_CORE_METADATA_HOST: edgex-core-metadata.default.svc
+  CLIENTS_SUPPORT_NOTIFICATIONS_HOST: edgex-support-notifications.default.svc
+  CLIENTS_SUPPORT_SCHEDULER_HOST: edgex-support-scheduler.default.svc
+  DATABASES_PRIMARY_HOST: edgex-redis-master-svc.default.svc
+  EDGEX_PROFILE: rules-engine.default.svc
+  EDGEX_SECURITY_SECRET_STORE: "true"
+  PROXY_SETUP_HOST: edgex-security-proxy-setup.default.svc
+  REGISTRY_HOST: edgex-core-consul.default.svc
+  SECRETSTORE_HOST: edgex-vault.default.svc
+  SECRETSTORE_PORT: '8200'
+  SERVICE_HOST: edgex-app-rules-engine.default.svc
+  STAGEGATE_BOOTSTRAPPER_HOST: edgex-security-bootstrapper.default.svc
+  STAGEGATE_BOOTSTRAPPER_STARTPORT: '54321'
+  STAGEGATE_DATABASE_HOST: edgex-redis-master-svc.default.svc
+  STAGEGATE_DATABASE_PORT: '6379'
+  STAGEGATE_DATABASE_READYPORT: '6379'
+  STAGEGATE_KONGDB_HOST: edgex-kong-db.default.svc
+  STAGEGATE_KONGDB_PORT: '5432'
+  STAGEGATE_KONGDB_READYPORT: '54325'
+  STAGEGATE_READY_TORUNPORT: '54329'
+  STAGEGATE_REGISTRY_HOST: edgex-core-consul.default.svc
+  STAGEGATE_REGISTRY_PORT: '8500'
+  STAGEGATE_REGISTRY_READYPORT: '54324'
+  STAGEGATE_SECRETSTORESETUP_HOST: edgex-security-secretstore-setup.default.svc
+  STAGEGATE_SECRETSTORESETUP_TOKENS_READYPORT: '54322'
+  STAGEGATE_WAITFOR_TIMEOUT: 60s
+  TRIGGER_EDGEXMESSAGEBUS_PUBLISHHOST_HOST: edgex-redis-master-svc.default.svc
+  TRIGGER_EDGEXMESSAGEBUS_SUBSCRIBEHOST_HOST: edgex-redis-master-svc.default.svc
+
