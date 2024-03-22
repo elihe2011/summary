@@ -1,453 +1,497 @@
-Kong
+# 1. 简介
+
+## 1.1 重要概念
+
+- **服务(Services)**：后端的API或应用程序，它们提供了一组相关的功能和端点，供客户端访问和使用。
+
+- **路由(Routes)**：定义了客户端如何访问服务，包括URL路径、HTTP方法、请求头等信息。路由将客户端的请求映射到相应的服务。
+
+- **上游(Upstreams)**：表示API、应用程序或微服务。Kong网关将请求发送到上游，以实现负载均衡、健康检查和断路器等功能。
+
+- **插件(Plugins)**：Kong 网关的扩展功能，用于添加额外的功能。插件可以修改请求、添加安全性、实现身份验证等功能。
+
+- **消费者群组(Consumer Groups)**：一组相关的消费者，共享相关的访问权限和配额。群组是一种组织和管理消费者的方式。
 
 
 
-values.yaml
+## 1.2 服务与路由
 
-```yaml
-env:
- pg_database: kong
- pg_hos: kong-ingress-controller-postgresql
- database: postgres
- pg_user: kong
- pg_password:
-  valueFrom:
-   secretKeyRef:
-    key: postgresql-password
-    name: kong-ingress-controller-postgresql
-postgresql:
- enabled: true
- postgresqlUsername: kong
- postgresqlDatabase: kong
- service:
-  port: 5432
- existingSecret: kong-ingress-controller-postgresql
+服务定义了后端API或应用程序，而路由定义了客户端访问服务的方式。
+
+在 Kong网关中，一个服务可以配置多个路由，每个路由对应一个URL路径和其他请求信息。
+
+
+
+## 1.3 上游与服务
+
+上游时网关和后端服务之间的中间件层。上游可以管理多个后端服务，并提供负载均衡、健康检查和断路器等功能。
+
+通过将服务与上游关联，Kong网关可以在多个后端服务之间分发请求，并确保可靠性和性能。这种灵活性使得网关能够适应不同的负载和流量需求。
+
+
+
+## 1.4 插件
+
+插件提供网关自身外的高级功能，包括请求过滤、响应转换、认证和授权等。
+
+**插件可以配置在不同的实体上，如消费者、路由和服务。**
+
+在同一个实体上配置多个插件，Kong将按它们的配置顺序依次执行。
+
+
+
+# 2. 插件开发
+
+## 2.1 Kong 代码
+
+Kong 核心代码结构
+
+```
+kong/
+├── api/
+├── cluster_events/
+├── cmd/
+├── core/
+├── dao/
+├── plugins/
+├── templates/
+├── tools/
+├── vendor/
+│
+├── cache.lua
+├── cluster_events.lua
+├── conf_loader.lua
+├── constants.lua
+├── init.lua
+├── meta.lua
+├── mlcache.lua
+└── singletons.lua
 ```
 
+执行 `kong start` 启动后，Kong 会解析配置文件并保存在 `$prefix/.kong_env`，同时生成 `$prefix/nginx.conf`，`$prefix/nginx-kong.conf` 供 OpenResty 使用。这三个文件，每次Kong重启均会被覆盖。
+
+自定义 OpenResty 配置，需要自己准备配置模板，然后启动时调用：`kong start -c kong.conf --nginx-conf custom_nginx.template` 即可。
 
 
 
+在 `nginx-kong.conf` 包含了 Kong 的 Lua 代码加载逻辑：
 
-```bash
-helm repo add kong https://charts.konghq.com
+```nginx
+init_by_lua_block {
+    kong = require 'kong'
+    kong.init()
+}
+init_worker_by_lua_block {
+    kong.init_worker()
+}
 
-helm install kong-ingress-controller kong/kong-ingress-controller -f values.yaml
+upstream kong_upstream {
+    server 0.0.0.1;
+    balancer_by_lua_block {
+        kong.balancer()
+    }
+    keepalive 60;
+}
+
+# ...
+
+location / {
+    rewrite_by_lua_block {
+        kong.rewrite()
+    }
+    access_by_lua_block {
+        kong.access()
+    }
+
+    header_filter_by_lua_block {
+        kong.header_filter()
+    }
+    body_filter_by_lua_block {
+        kong.body_filter()
+    }
+    log_by_lua_block {
+        kong.log()
+    }
+}
 ```
 
-
-
-kong plugin 配置：(rate-limiting)
-
-```yaml
-apiVersion: configuration.konghq.com/v1
-kind: KongPlugin
-metadata:
-  name: rate-limiting
-  plugin: rate-limiting
-config:
-  policy: redis
-  redis_host: redis-instance
-  redis_port: 6379
-  second: 300
-```
-
-
-
-- **config.policy**:
-  - **local** means the counter will be stored in memory.
-  - **cluster** means the kong database will store the counter.
-  - **redis** means a Redis will store the counter.
-
-- **config.second**: The maximum of requests per second
-
-
-
-Kong consumer:
-
-```yaml
-apiVersion: configuration.konghq.com/v1
-kind: KongConsumer
-metadata:
-  name: my-great-consumer
-  username: my-great-consumer
-  custom_id: my-great-consumer
-```
-
-
-
-**Configure API gateway routes**:
-
-```yaml
-apiVersion:
-kind:
-metadata:
- name: api-gateway-routes
- annotations:
-  konghq.com/plugins: rate-limiting
-spec:
- ingressClassName: "kong"
- rules:
-  - host: myproject.api.me
-    http:
-     paths:
-      - path: /users
-        backend:
-         serviceName: myproject
-         servicePort: 80
-      - path: /groups
-        backend:
-         serviceName: myproject
-         servicePort: 80
-```
-
-
-
-
-
-
-
-
+Kong 的入库模块 `kong/init.lua`
 
 ```lua
-local ngx_re = require "ngx.re"
-local BasePlugin = require "kong.plugins.base_plugin"
-local string = require "resty.string"
-local BuserResolveHandler = BasePlugin:extend()
+local Kong = {}
 
-function BuserResolveHandler:new()
-    BuserResolveHandler.super.new(self, "buser-resolve")
+function Kong.init()
+  -- ...
 end
 
-function BuserResolveHandler:access(conf)
-    BuserResolveHandler.super.access(self)
-    local cookieName = "cookie_" .. "KUAIZHAN_V2"
-    local kuaizhanV2 = ngx.var[cookieName]
---     ngx.log(ngx.ERR, "kuaizhanV2", kuaizhanV2)
-    local uid = 0
-    ngx.req.set_header("X-User-Id", uid)
+function Kong.init_worker()
+  -- ...
+end
+
+function Kong.rewrite()
+  -- ...
+end
+
+function Kong.access()
+  -- ...
+end
+
+function Kong.header_filter()
+  -- ...
+end
+
+function Kong.log()
+  -- ...
+end
+
+-- ...
+```
+
+
+
+## 2.2 钩子函数
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kong/kong-phase.png) 
+
+| 函数名           | LUA-NGINX-MODULE Context | 描述                                                         |
+| ---------------- | ------------------------ | ------------------------------------------------------------ |
+| :init_worker()   | init_worker_by_lua       | 在每个 Nginx 工作进程启动时执行                              |
+| :certificate()   | ssl_certificate_by_lua   | 在SSL握手阶段的SSL证书服务阶段执行                           |
+| :rewrite()       | rewrite_by_lua           | 从客户端接收作为重写阶段处理程序的每个请求执行。在这个阶段，无论是API还是消费者都没有被识别，因此这个处理器只在插件被配置为全局插件时执行 |
+| :access()        | access_by_lua            | 为客户的每一个请求而执行，并在它被代理到上游服务之前执行（路由） |
+| :header_filter() | header_filter_by_lua     | 从上游服务接收到所有响应头字节时执行                         |
+| :body_filter()   | body_filter_by_lua       | 从上游服务接收的响应体的每个块时执行。由于响应流回客户端，它可以超过缓冲区大小，因此，如果响应较大，该方法可以被多次调用 |
+| :log()           | log_by_lua               | 当最后一个响应字节已经发送到客户端时执行                     |
+|                  |                          |                                                              |
+
+
+
+## 2.3 工具类
+
+| PDK名称                                                      | 功能描述 |
+| ------------------------------------------------------------ | -------- |
+| kong.client	              |提供客户端的ip, 端口等信息          |
+| kong.ctx	         |  提供了插件之间共享并传递参数的桥梁         |
+| kong.ip	 |  提供了kong.ip.is_trusted(address)IP白名单检测方法        |
+| kong.log	                            |   日志方法            |
+| kong.node	                     |   返回此插件的UUID信息         |
+| kong.request	 |    仅提供request信息的读取功能,access()中可读      |
+| kong.response	 |     提供response信息的读写功能, access()中不可用     |
+| kong.router	               |  返回此请求关联的router信息       |
+| kong.service	 |   返回此请求关联的service,可以动态修改后端服务信息      |
+| kong.service.request	|  仅用于access()方法中,可以读写请求信息       |
+| kong.service.response	 |   仅可用于header_filter(), body_filter()方法中,只提供header信息的读取功能       |
+| kong.table	          |   kong提供的一套数据结构功能                  |
+
+
+
+## 2.4 插件结构
+
+```
+complete-plugin
+├── api.lua
+├── daos.lua
+├── handler.lua
+├── migrations
+│   ├── cassandra.lua
+│   └── postgres.lua
+└── schema.lua
+```
+
+各个模块功能如下：
+
+| Module name      | Required | Description                                                  |
+| :--------------- | :------- | :----------------------------------------------------------- |
+| api.lua          | No       | 插件需要向 Admin API 暴露接口时使用                          |
+| daos.lua         | No       | 数据层相关，当插件需要访问数据库时配置                       |
+| handler.lua      | Yes      | 插件的主要逻辑，这个将会被 Kong 在不同阶段执行其对应的 handler |
+| migrations/*.lua | No       | 插件依赖的数据表结构，启用了 daos.lua 时需要定义             |
+| schema.lua       | Yes      | 插件的配置参数定义，主要用于 Kong 参数验证                   |
+
+
+
+### 2.4.1 鉴权插件
+
+ `schema.lua`: 定义参数等
+
+```lua
+local typedefs = require "kong.db.schema.typedefs"
+
+return {
+  name = "custom-auth",
+  fields = {
+  { protocols = typedefs.protocols_http },
+  { consumer = typedefs.no_consumer },
+  { config = {
+    type = "record",
+    fields = {
+      { introspection_endpoint = typedefs.url({ required = true }) },
+      { token_header = typedefs.header_name { default = "Authorization", required = true }, }
+    }, 
+    }, 
+  },
+  },
+}
+```
+
+
+
+`handler.lua`: 核心处理逻辑
+
+```lua
+local http = require "resty.http"
+local utils = require "kong.tools.utils"
+local cjson = require "cjson"
+
+local AuthHandler = {
+  VERSION = "1.0",
+  PRIORITY = 1000,
+}
+
+local function check_access_token(conf, access_token, request_path, request_method)
+  local httpc = http:new()
   
-    // cookie 内容 3001459%7C1636684996%7C7180720502%7Cb61a12ef865072964aa359e6a9ef2e0b1846dee9
-    if xxx_V2 and xxx_V2 ~= '' then
-        local res, err = ngx_re.split(xxxV2, "%7C")
-        if err then
-            return
-        end
-        // 解析得到 userId, time, nonce, sign，
-        // 分别为 3001459，1636684996，7180720502，b61a12ef865072964aa359e6a9ef2e0b1846dee9
-        local userId, time, nonce, sign = res[1], res[2], res[3], res[4]
-        // 根据密钥，时间，签名，利用 hmac_sha1 算法，十六进制算法，得到摘要签名
-        local digest = ngx.hmac_sha1(conf.secret, userId .. time .. nonce)
-        local theSign = string.to_hex(digest)
-        -- TODO 加上过期时间判断
-        // 计算签名和cookie解析得到sign 是否相同，相同则赋值uid
-        if theSign == sign then
-            uid = userId
-        end
-        ngx.log(ngx.ERR, "theSign:", theSign, "sign:", sign, "uid:", uid)
-    end
+  -- validate the token & the user access rights
+  local res, err = httpc:request_uri(conf.introspection_endpoint, {
+    method = "POST",
+    ssl_verify = false,
+    body = '{ "path":"' .. request_path .. '", "method":"' .. request_method ..'"}',
+    headers = { ["Content-Type"] = "application/json",
+      ["Authorization"] = "Bearer " .. access_token }
+  })
 
-    ngx.log(ngx.ERR, "get x-user-id:" .. uid)
-    // nginx 请求头header里面存放 X-User-Id,再转发到各个业务线
-    ngx.req.set_header("X-User-Id", uid)
+  if not res then
+    kong.log.err("failed to call IAM endpoint")
+    kong.response.exit(500, "failed to call IAM server")
+    return
+  end
+
+  -- http status
+  if res.status >= 400 then
+    kong.log.err("IAM server return error status: ", res.status)
+    kong.response.exit(res.status, res.body, {["Content-Type"] = "application/json"})
+    return
+  end
+
+  -- parse body 
+  local data = cjson.decode(res.body)
+
+  -- service error code
+  if data.code ~= 0 then
+    kong.log.err("IAM server return service error code: ", data.code)
+    kong.response.exit(200, data, {["Content-Type"] = "application/json"})
+    return
+  end
+  
+  -- ok, pass away
+  local user_id = res.headers["X-User-Id"]
+  kong.service.request.set_header("X-User-Id", user_id)
+
+  return true
 end
 
-return BuserResolveHandler
+function AuthHandler:access(conf)
+  local access_token = kong.request.get_headers()[conf.token_header]
+  if not access_token then
+    kong.response.exit(401, "token not found in header")  --unauthorized
+  end
+  
+  -- replace Bearer prefix
+  access_token = access_token:sub(8,-1) -- drop "Bearer "
+  local request_path = kong.request.get_path()
+  local request_method = kong.request.get_method()
+  
+  check_access_token(conf, access_token, request_path, request_method)
+end
+
+return AuthHandler
 ```
 
 
 
+### 2.4.2 日志插件
 
+ `schema.lua`: 定义参数等
 
-安装kong：
+```lua
+local typedefs = require "kong.db.schema.typedefs"
 
-
-
-mkdir -p docker/kong
-$ touch docker/kong/Dockerfile
-
-
-
-```dockerfile
-FROM kong:1.4.2-centos
-
-LABEL description="Centos 7 + Kong 1.4.2 + kong-oidc plugin"
-
-RUN yum install -y git unzip && yum clean all
-
-RUN luarocks install kong-oidc
+return {
+  name = "custom-log",
+  fields = {
+    { protocols = typedefs.protocols_http },
+    { config = {
+        type = "record",
+        fields = {
+          { http_endpoint = typedefs.url({ required = true }) },
+          { token_header = typedefs.header_name { default = "Authorization", required = true }, },
+          { timeout = { type = "number", default = 10000 }, },
+          { keepalive = { type = "number", default = 60000 }, },
+          { retry_count = { type = "integer", default = 10 }, },
+          { queue_size = { type = "integer", default = 1 }, },
+          { flush_timeout = { type = "number", default = 2 }, }
+    }, }, },
+  },
+}
 ```
 
 
 
-```bash
-docker build -t kong:1.4.2-centos-oidc .
+`handler.lua`: 核心处理逻辑
+
+```lua
+local cjson = require "cjson"
+local http = require "resty.http"
+local Queue = require "kong.tools.queue"
+
+local LogHandler = {
+  VERSION = "1.0",
+  PRIORITY = 1000,
+}
+
+local function do_ops_log(conf, payload)
+  local httpc = http.new()
+  local res, err = httpc:request_uri(conf.http_endpoint, {
+    method = "POST",
+    headers = {
+      ["Content-Type"] = "application/json",
+    },
+    ssl_verify = false,
+    body = payload,
+  })
+  
+  if not res then
+    kong.log.err("failed to call IAM endpoint to record ops-log")
+    return
+  end
+
+  return true
+end
+
+function LogHandler:access(conf)
+  local access_token = kong.request.get_headers()[conf.token_header]
+  if not access_token then
+    kong.response.exit(401, "token not found in header")  --unauthorized
+  end
+
+  local request_body = ""
+  local content_type = kong.request.get_headers()["Content-Type"]
+  if content_type == "application/json" then
+    request_body = kong.request.get_body()
+  end
+
+  -- request cache
+  local ctx = kong.ctx.plugin
+  ctx.start_time = ngx.now() * 1000
+  ctx.access_token =  access_token
+  ctx.user_agent = kong.request.get_headers()["User-Agent"]
+  ctx.client_ip = kong.request.get_headers()["X-Forwarded-For"]
+  ctx.uri = kong.request.get_path()
+  ctx.method = kong.request.get_method()
+
+  ctx.request_body = request_body
+end
+
+function LogHandler:body_filter(conf)
+  -- response cache
+  local ctx = kong.ctx.plugin
+  ctx.end_time = ngx.now() * 1000
+  
+  local code = 0
+  local status = kong.service.response.get_status()
+  if (status == nil or status >= 400) then
+    code = 1
+  end
+  ctx.code = code
+end
+
+local function json_array_concat(entries)
+  return "[" .. table.concat(entries, ",") .. "]"
+end
+
+local function get_queue_id(conf)
+  return string.format("%s:%s:%s:%s:%s:%s",
+    conf.http_endpoint,
+    conf.timeout,
+    conf.keepalive,
+    conf.retry_count,
+    conf.queue_size,
+    conf.flush_timeout)
+end
+
+function LogHandler:log(conf)
+  local ctx = kong.ctx.plugin
+
+  if (ctx.method ~= "POST" and ctx.method ~= "PUT" and ctx.method ~= "DELETE") then
+    kong.log.warn("skip method ", ctx.method)
+    return
+  end
+
+  local body = {
+    token = ctx.access_token,
+    time_cost = ctx.end_time - ctx.start_time,
+    user_agent = ctx.user_agent,
+    client_ip = ctx.client_ip,
+    uri = ctx.uri,
+    method = ctx.method,
+    code = ctx.code,
+    req_body = ctx.request_body
+  }
+  
+  local entry = cjson.encode(body)
+  
+  local process = function(conf, entries)
+    local payload = #entries == 1 and entries[1] or json_array_concat(entries)
+    return do_ops_log(conf, payload)
+  end
+  
+  local queue_id = get_queue_id(conf)
+  local queue_conf = {
+    name = "custome-log",
+    log_tag = "custome-log",
+    max_batch_size = 10,
+    max_coalescing_delay = 1,
+    max_entries = 10000,
+    max_bytes = 1000000,
+    initial_retry_delay = 0.01,
+    max_retry_time = 60,
+    max_retry_delay = 60,
+  }
+
+  local batch_max_size = conf.queue_size or 1
+  local opts = {
+    retry_count = conf.retry_count,
+    flush_timeout = conf.flush_timeout,
+    batch_max_size = batch_max_size,
+    process_delay = 0,
+  }
+
+  local ok, err = Queue.enqueue(
+    queue_conf,
+    process,
+    conf,
+    entry
+  )
+  if not ok then
+    kong.log.err("failed to enqueue log entry to log server: ", err)
+  end
+end
+
+return LogHandler
 ```
 
 
+
+# 3. 部署网关
+
+## 3.1 安装
 
 docker-compose.yaml
-
-```yaml
-version: '3.4'
-
-networks: 
-  kong-net:
-
-volumes:
-  kong-datastore:
-
-services:
-  kong-db:
-    image: postgres:9.6
-    volumes:
-      - kong-datastore:/var/lib/postgresql/data
-    networks:
-      - kong-net
-    ports:
-      - "15432:5432"
-    environment:
-      POSTGRES_DB:       api-gw
-      POSTGRES_USER:     kong
-      POSTGRES_PASSWORD: kong
-
-  kong:
-    image: kong:1.4.2-centos-oidc
-    depends_on:
-      - kong-db
-    networks:
-      - kong-net
-    ports:
-      - "8000:8000" # Listener
-      - "8001:8001" # Admin API
-      - "8443:8443" # Listener  (SSL)
-      - "8444:8444" # Admin API (SSL)
-    environment:
-      KONG_DATABASE:         postgres
-      KONG_PG_HOST:          kong-db
-      KONG_PG_PORT:          5432
-      KONG_PG_DATABASE:      api-gw
-      KONG_PROXY_ACCESS_LOG: /dev/stdout
-      KONG_ADMIN_ACCESS_LOG: /dev/stdout
-      KONG_PROXY_ERROR_LOG:  /dev/stderr
-      KONG_ADMIN_ERROR_LOG:  /dev/stderr
-      KONG_PROXY_LISTEN:     0.0.0.0:8000, 0.0.0.0:8443 ssl
-      KONG_ADMIN_LISTEN:     0.0.0.0:8001, 0.0.0.0:8444 ssl
-      KONG_PLUGINS:          bundled,oidc
-      
-  konga-prepare:
-     image: pantsel/konga:next
-     command: "-c prepare -a postgres -u postgresql://kong:kong@kong-db:5432/konga_db"
-     networks:
-       - kong-net
-     restart: on-failure
-     links:
-       - kong-db
-     depends_on:
-       - kong-db
-       
-  konga:
-    image: pantsel/konga:latest
-    networks:
-      - kong-net
-    environment:
-      DB_ADAPTER: postgres
-      DB_HOST: kong-db
-      DB_USER: kong
-      DB_DATABASE: konga_db
-      NODE_ENV: production
-      DB_PASSWORD: kong
-    depends_on: 
-      - kong-db
-      - konga-prepare
-    ports:
-      - "1337:1337"
-```
-
-
-
-安装kong：
-
-```bash
-# 创建网络
-docker network create kong-net
-
-# 持久化
-docker volume create kong-volume
-
-# 数据库
-docker run -d --name kong-database \
-           --network=kong-net \
-           -p 5432:5432 \
-           -v kong-volume:/var/lib/postgresql/data \
-           -e "POSTGRES_USER=kong" \
-           -e "POSTGRES_DB=kong" \
-           -e "POSTGRES_PASSWORD=kong"  \
-           postgres:9.6
-           
-# 初始化或者迁移数据库
-docker run --rm \
- --network=kong-net \
- -e "KONG_DATABASE=postgres" \
- -e "KONG_PG_HOST=kong-database" \
- -e "KONG_PG_PASSWORD=kong" \
- -e "KONG_CASSANDRA_CONTACT_POINTS=kong-database" \
- kong:3.3.0 kong migrations bootstrap --vvv
- 
- # 启动
- docker run -d --name kong \
- --network=kong-net \
- -e "KONG_DATABASE=postgres" \
- -e "KONG_PG_HOST=kong-database" \
- -e "KONG_PG_PASSWORD=kong" \
- -e "KONG_CASSANDRA_CONTACT_POINTS=kong-database" \
- -e "KONG_PROXY_ACCESS_LOG=/dev/stdout" \
- -e "KONG_ADMIN_ACCESS_LOG=/dev/stdout" \
- -e "KONG_PROXY_ERROR_LOG=/dev/stderr" \
- -e "KONG_ADMIN_ERROR_LOG=/dev/stderr" \
- -e "KONG_ADMIN_LISTEN=0.0.0.0:8001, 0.0.0.0:8444 ssl" \
- -e "KONG_PLUGIN=bundled,custom-auth" \
- -e "KONG_LUA_PACKAGE_PATH=/usr/local/share/lua/5.1/kong/plugins/custom-auth/?.lua;;" \
- -p 8000:8000 \
- -p 8443:8443 \
- -p 8001:8001 \
- -p 8444:8444 \
- -v /root/kong/custom-auth:/usr/local/share/lua/5.1/kong/plugins/custom-auth \
- -v /etc/localtime:/etc/localtime:ro \
- kong:latest
- 
- 
-  docker run -d --name kong \
- --network=kong-net \
- -e "KONG_DATABASE=postgres" \
- -e "KONG_PG_HOST=kong-database" \
- -e "KONG_PG_PASSWORD=kong" \
- -e "KONG_CASSANDRA_CONTACT_POINTS=kong-database" \
- -e "KONG_PROXY_ACCESS_LOG=/dev/stdout" \
- -e "KONG_ADMIN_ACCESS_LOG=/dev/stdout" \
- -e "KONG_PROXY_ERROR_LOG=/dev/stderr" \
- -e "KONG_ADMIN_ERROR_LOG=/dev/stderr" \
- -e "KONG_ADMIN_LISTEN=0.0.0.0:8001, 0.0.0.0:8444 ssl" \
- -e "KONG_PLUGIN=bundled,custom-auth" \
- -p 8000:8000 \
- -p 8443:8443 \
- -p 8001:8001 \
- -p 8444:8444 \
- -v /root/kong/custom-auth:/usr/local/share/lua/5.1/kong/plugins/custom-auth \
- -v /etc/localtime:/etc/localtime:ro \
- -v /root/kong/constants.lua:/usr/local/share/lua/5.1/kong/constants.lua \
- kong:latest
-```
-
-
-
-检查Kong Admin 是否联通：
-
-```bash
-curl -i http://192.168.3.195:8001/
-```
-
-
-
-### Kong 管理 UI:
-
-```bash
-# 存储
-docker volume create konga-postgresql
-
-# 数据库
-docker run -d --name konga-database  \
-	 --network=kong-net  \
-                    -p 5433:5432 \
-                    -v  konga-postgresql:/var/lib/postgresql/data  \
-                    -e "POSTGRES_USER=konga"  \
-                    -e "POSTGRES_DB=konga" \
-                    -e "POSTGRES_PASSWORD=konga"  \
-                    postgres:9.6
-                    
-# 初始化
-docker run --rm  \
-     --network=kong-net  \
-     pantsel/konga:latest -c prepare -a postgres -u postgres://konga:konga@konga-database:5432/konga
-     
-# 启动     
-docker run -d -p 1337:1337  \
-               --network kong-net  \
-               -e "DB_ADAPTER=postgres"  \
-               -e "DB_URI=postgres://konga:konga@konga-database:5432/konga"  \
-               -e "NODE_ENV=production"  \
-               -e "DB_PASSWORD=konga" \
-               --name konga \
-               pantsel/konga
-```
-
-
-
-访问控制台：http://192.168.3.195:1337/
-
-在 dashboard 面板里新增链接，Kong 的管理 api 路径 `http://192.168.3.195:8001`
-
-
-
-
-
-
-
-## Environment variables
-
-These are the general environment variables Konga uses.
-
-
-
-| VAR                                   | DESCRIPTION                                                  | VALUES                                | DEFAULT                                      |
-| ------------------------------------- | ------------------------------------------------------------ | ------------------------------------- | -------------------------------------------- |
-| HOST                                  | The IP address that will be bind by Konga's server           | -                                     | '0.0.0.0'                                    |
-| PORT                                  | The port that will be used by Konga's server                 | -                                     | 1337                                         |
-| NODE_ENV                              | The environment                                              | `production`,`development`            | `development`                                |
-| SSL_KEY_PATH                          | If you want to use SSL, this will be the absolute path to the .key file. Both `SSL_KEY_PATH` & `SSL_CRT_PATH` must be set. | -                                     | null                                         |
-| SSL_CRT_PATH                          | If you want to use SSL, this will be the absolute path to the .crt file. Both `SSL_KEY_PATH` & `SSL_CRT_PATH` must be set. | -                                     | null                                         |
-| KONGA_HOOK_TIMEOUT                    | The time in ms that Konga will wait for startup tasks to finish before exiting the process. | -                                     | 60000                                        |
-| DB_ADAPTER                            | The database that Konga will use. If not set, the localDisk db will be used. | `mongo`,`mysql`,`postgres`            | -                                            |
-| DB_URI                                | The full db connection string. Depends on `DB_ADAPTER`. If this is set, no other DB related var is needed. | -                                     | -                                            |
-| DB_HOST                               | If `DB_URI` is not specified, this is the database host. Depends on `DB_ADAPTER`. | -                                     | localhost                                    |
-| DB_PORT                               | If `DB_URI` is not specified, this is the database port. Depends on `DB_ADAPTER`. | -                                     | DB default.                                  |
-| DB_USER                               | If `DB_URI` is not specified, this is the database user. Depends on `DB_ADAPTER`. | -                                     | -                                            |
-| DB_PASSWORD                           | If `DB_URI` is not specified, this is the database user's password. Depends on `DB_ADAPTER`. | -                                     | -                                            |
-| DB_DATABASE                           | If `DB_URI` is not specified, this is the name of Konga's db. Depends on `DB_ADAPTER`. | -                                     | `konga_database`                             |
-| DB_PG_SCHEMA                          | If using postgres as a database, this is the schema that will be used. | -                                     | `public`                                     |
-| KONGA_LOG_LEVEL                       | The logging level                                            | `silly`,`debug`,`info`,`warn`,`error` | `debug` on dev environment & `warn` on prod. |
-| TOKEN_SECRET                          | The secret that will be used to sign JWT tokens issued by Konga | -                                     | -                                            |
-| NO_AUTH                               | Run Konga without Authentication                             | true/false                            | -                                            |
-| BASE_URL                              | Define a base URL or relative path that Konga will be loaded from. Ex: [www.example.com/konga](http://www.example.com/konga) |                                       | -                                            |
-| KONGA_SEED_USER_DATA_SOURCE_FILE      | Seed default users on first run. [Docs](https://github.com/pantsel/konga/blob/master/docs/SEED_DEFAULT_DATA.md). |                                       | -                                            |
-| KONGA_SEED_KONG_NODE_DATA_SOURCE_FILE | Seed default Kong Admin API connections on first run [Docs](https://github.com/pantsel/konga/blob/master/docs/SEED_DEFAULT_DATA.md) |                                       |                                              |
-
-
-
-```bash
-# 创建 upstream
-curl -X POST http://127.0.0.1:8001/upstreams --data "name=lap-upstream"
-
-# 创建 target
-curl -X POST http://127.0.0.1:8001/upstreams/lap-upstream/targets --data "target=192.168.3.187:8080" --data "weight=100"
-
-# 创建 service
-curl -X POST http://127.0.0.1:8001/services --data "name=lap" --data "host=lap-upstream" --data "path=/lap"
-
-# 创建 route
-curl -X POST http://localhost:8001/services/lap/routes --data "name=lap-route" --data "paths[]=/lap"
-```
-
-
-
-
-
-测试
 
 ```yaml
 version: '3'
 
 services:
-
   kong-database:
     image: postgres:9.6
     container_name: kong-database
@@ -459,10 +503,10 @@ services:
       - POSTGRES_PASSWORD=kong
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      - "db-data-kong-postgres:/var/lib/postgresql/data"
+      - db-data-kong-postgres:/var/lib/postgresql/data
 
   kong-migrations:
-    image: kong
+    image: kong:3.3.0
     environment:
       - KONG_DATABASE=postgres
       - KONG_PG_HOST=kong-database
@@ -489,7 +533,7 @@ services:
       - KONG_PROXY_ERROR_LOG=/dev/stderr
       - KONG_ADMIN_ERROR_LOG=/dev/stderr
       - KONG_ADMIN_LISTEN=0.0.0.0:8001, 0.0.0.0:8444 ssl
-      - KONG_PLUGIN=bundled,custom-auth
+      - KONG_PLUGINS=bundled,custom-auth,custom-log
     restart: on-failure
     ports:
       - 8000:8000
@@ -499,7 +543,7 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ./custom-auth:/usr/local/share/lua/5.1/kong/plugins/custom-auth
-      - ./constants.lua:/usr/local/share/lua/5.1/kong/constants.lua
+      - ./custom-log:/usr/local/share/lua/5.1/kong/plugins/custom-log
     links:
       - kong-database:kong-database
     depends_on:
@@ -525,17 +569,49 @@ networks:
 
 
 
+检查Kong Admin 是否联通：
+
+```bash
+curl -i http://192.168.3.195:8001/
+```
+
+konga 访问控制台：http://192.168.3.195:1337/
+
+在 dashboard 面板里新增链接，Kong 的管理 api 路径 `http://192.168.3.195:8001`
 
 
-嵌入第三方页面：
 
-如果你想在你的网站上嵌入第三方页面登录功能，一般有以下几种方式：
+## 3.2 配置
 
-1. OAuth认证：你可以使用OAuth认证协议，让用户通过第三方网站登录你的网站。这种方式需要你的网站支持OAuth认证协议，并且需要你申请第三方网站的OAuth授权。用户在第三方网站上授权后，就可以在你的网站上登录。
-2. 嵌入iframe：你可以使用iframe标签将第三方网站的登录界面嵌入到你的网站中。这种方式需要你获得第三方网站的授权，并且需要注意安全问题。因为如果第三方网站的登录界面有漏洞，可能会导致你的网站受到攻击。
-3. 跳转到第三方网站：你可以在你的网站中设置一个链接，让用户点击后跳转到第三方网站的登录界面。用户在第三方网站上登录后，可以跳转回你的网站。这种方式比较简单，但是用户体验可能不太好，因为需要跳转到另一个页面。
+```bash
+# 管理IP地址
+KONG_ADMIN_IP=$(kubectl get svc -n ops-system | grep kong-svc | awk '{print $3}')
 
-总之，如果你想在你的网站上嵌入第三方页面登录功能，需要考虑到安全性、用户体验等因素，并根据具体情况选择合适的方式实现。
+# upstream => backend
+curl -X POST http://${KONG_ADMIN_IP}:8001/upstreams --data "name=lap"
+curl -X POST http://${KONG_ADMIN_IP}:8001/upstreams/lap/targets --data "target=lap-svc:8889" --data "weight=100"
+
+# service => upstream (host=lap)
+curl -X POST http://${KONG_ADMIN_IP}:8001/services --data "name=lap" --data "host=lap"
+
+# route => service (services/lap/routes)
+curl -X POST http://${KONG_ADMIN_IP}:8001/services/lap/routes --data "name=lap" --data 'strip_path=false' --data "paths[]=/lap"
+
+# plugin => route
+curl -X POST http://${KONG_ADMIN_IP}:8001/routes/lap/plugins --data 'name=custom-auth' --data 'config.introspection_endpoint=http://iam-svc:8888/xauth'
+curl -X POST http://${KONG_ADMIN_IP}:8001/routes/lap/plugins --data 'name=custom-log' --data 'config.http_endpoint=http://iam-svc:8888/xlog'
+
+# plugin => service
+curl -X POST http://${KONG_ADMIN_IP}:8001/services/lap/plugins --data 'name=cors' --data 'config.max_age=86400' --data 'config.methods=["GET","HEAD","PUT","POST","DELETE"]' --data 'config.credentials=true'
+```
+
+
+
+
+
+
+
+
 
 
 
