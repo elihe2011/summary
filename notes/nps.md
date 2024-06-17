@@ -10,8 +10,8 @@ mkdir -p /opt/nps
 vi /opt/nps/conf/nps.conf
 bridge_port=5253         # 通道端口
 
-web_username=eli         # web服务 
-web_password=Xtwl.123
+web_username=admin         # web服务 
+web_password=Admin@123
 web_port = 5252
 
 # 获取镜像
