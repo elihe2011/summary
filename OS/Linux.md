@@ -730,3 +730,24 @@ tcpdump tcp -i eth3 src host 192.168.3.107 -w ./a.cap
 tcpdump ip host 192.168.3.195 and 192.168.3.155 -w ./a.cap
 ```
 
+
+
+# 12. 远程登录黑名单
+
+```bash
+#!/usr/bin/env bash
+
+lastb | awk '{print $3}' | grep ^[0-9] | sort | uniq -c | awk '{print $1"\t"$2}' | while read line; do
+do
+    num=$(echo $line | awk '{print $1}')
+    ip=$(echo $line | awk '{print $2}')
+    if [[ "$num" -ge 10 ]]; then
+        grep "$ip" /etc/hosts.deny > /dev/null 2>&1
+        if [[ "$?" -gt 0 ]]; then
+            echo "# $(date +%F' '%H:%M:%S)" >> /etc/hosts.deny
+            echo "sshd:$ip" >> /etc/hosts.deny
+        fi
+    fi
+done
+```
+
