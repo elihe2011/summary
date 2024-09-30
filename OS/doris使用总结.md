@@ -219,3 +219,155 @@ Query OK, 0 rows affected (0.08 sec)
 mysql> show proc '/backends';
 ```
 
+
+
+# 2. 集群安装
+
+## 2.1 准备
+
+```bash
+# 创建目录
+mkdir -p /data/{fe-01,fe-02,fe-03}/{doris-meta,log}
+mkdir -p /data/{be-01,be-02,be-03}/{storage,script,log}
+
+# 修改系统参数
+vi /etc/sysctl.conf
+vm.max_map_count=2000000
+
+# 参数生效
+sysctl -p
+```
+
+
+
+## 2.2 部署
+
+```bash
+mkdir -p /opt/doris && cd $_
+
+# 启动文件
+cat > /opt/doris/docker-compose.yml <<EOF
+version: '3'
+services:
+  docker-fe-01:
+    image: "apache/doris:2.0.0_alpha-fe-x86_64"
+    container_name: "doris-fe-01"
+    hostname: "fe-01"
+    environment:
+      - FE_SERVERS=fe1:172.20.80.2:9010,fe2:172.20.80.3:9010,fe3:172.20.80.4:9010
+      - FE_ID=1
+    ports:
+      - 8031:8030
+      - 9031:9030
+    volumes:
+      - /data/fe-01/doris-meta:/opt/apache-doris/fe/doris-meta
+      - /data/fe-01/log:/opt/apache-doris/fe/log
+    networks:
+      doris_net:
+        ipv4_address: 172.20.80.2
+  docker-fe-02:
+    image: "apache/doris:2.0.0_alpha-fe-x86_64"
+    container_name: "doris-fe-02"
+    hostname: "fe-02"
+    environment:
+      - FE_SERVERS=fe1:172.20.80.2:9010,fe2:172.20.80.3:9010,fe3:172.20.80.4:9010
+      - FE_ID=2
+    ports:
+      - 8032:8030
+      - 9032:9030
+    volumes:
+      - /data/fe-02/doris-meta:/opt/apache-doris/fe/doris-meta
+      - /data/fe-02/log:/opt/apache-doris/fe/log
+    networks:
+      doris_net:
+        ipv4_address: 172.20.80.3
+  docker-fe-03:
+    image: "apache/doris:2.0.0_alpha-fe-x86_64"
+    container_name: "doris-fe-03"
+    hostname: "fe-03"
+    environment:
+      - FE_SERVERS=fe1:172.20.80.2:9010,fe2:172.20.80.3:9010,fe3:172.20.80.4:9010
+      - FE_ID=3
+    ports:
+      - 8033:8030
+      - 9033:9030
+    volumes:
+      - /data/fe-03/doris-meta:/opt/apache-doris/fe/doris-meta
+      - /data/fe-03/log:/opt/apache-doris/fe/log
+    networks:
+      doris_net:
+        ipv4_address: 172.20.80.4
+  docker-be-01:
+    image: "apache/doris:2.0.0_alpha-be-x86_64"
+    container_name: "doris-be-01"
+    hostname: "be-01"
+    depends_on:
+      - docker-fe-01
+      - docker-fe-02
+      - docker-fe-03
+    environment:
+      - FE_SERVERS=fe1:172.20.80.2:9010,fe2:172.20.80.3:9010,fe3:172.20.80.4:9010
+      - BE_ADDR=172.20.80.5:9050
+    ports:
+      - 8041:8040
+    volumes:
+      - /data/be-01/storage:/opt/apache-doris/be/storage
+      - /data/be-01/script:/docker-entrypoint-initdb.d
+      - /data/be-01/log:/opt/apache-doris/be/log
+    networks:
+      doris_net:
+        ipv4_address: 172.20.80.5
+  docker-be-02:
+    image: "apache/doris:2.0.0_alpha-be-x86_64"
+    container_name: "doris-be-02"
+    hostname: "be-02"
+    depends_on:
+      - docker-fe-01
+      - docker-fe-02
+      - docker-fe-03
+    environment:
+      - FE_SERVERS=fe1:172.20.80.2:9010,fe2:172.20.80.3:9010,fe3:172.20.80.4:9010
+      - BE_ADDR=172.20.80.6:9050
+    ports:
+      - 8042:8040
+    volumes:
+      - /data/be-02/storage:/opt/apache-doris/be/storage
+      - /data/be-02/script:/docker-entrypoint-initdb.d
+      - /data/be-02/log:/opt/apache-doris/be/log
+    networks:
+      doris_net:
+        ipv4_address: 172.20.80.6
+  docker-be-03:
+    image: "apache/doris:2.0.0_alpha-be-x86_64"
+    container_name: "doris-be-03"
+    hostname: "be-03"
+    depends_on:
+      - docker-fe-01
+      - docker-fe-02
+      - docker-fe-03
+    environment:
+      - FE_SERVERS=fe1:172.20.80.2:9010,fe2:172.20.80.3:9010,fe3:172.20.80.4:9010
+      - BE_ADDR=172.20.80.7:9050
+    ports:
+      - 8043:8040
+    volumes:
+      - /data/be-03/storage:/opt/apache-doris/be/storage
+      - /data/be-03/script:/docker-entrypoint-initdb.d
+      - /data/be-03/log:/opt/apache-doris/be/log
+    networks:
+      doris_net:
+        ipv4_address: 172.20.80.7
+networks:
+  doris_net:
+    ipam:
+      config:
+        - subnet: 172.20.80.0/24
+EOF
+
+# 启动集群
+docker-compose up -d
+
+# 集群状态
+docker-compose ps
+```
+

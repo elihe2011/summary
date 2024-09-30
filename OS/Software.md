@@ -90,6 +90,20 @@ snmpbulkwalk -Cc -t 5 -r 3 -On -v 3 -u abc -l authPriv -a MD5 -A abc@Auth -x DES
 
 
 
+## 1.4 扩展
+
+开启主机磁盘查询 .1.3.6.1.4.1.2021.9.1
+
+```bash
+vi /etc/snmp/snmpd.conf
+# disk checks
+disk / 10000
+
+systemctl restart snmpd
+```
+
+
+
 # 2. rsync
 
 ## 2.1 安装
