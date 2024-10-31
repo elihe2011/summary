@@ -151,3 +151,24 @@ WDAGUtilityAccount  S-1-5-21-2570433964-3893667463-618210156-504
 # 8. Postman
 
 页面刷新不出来解决方法：**删除%appdata%目录下的Postman文件**，然后重新打开Postman重新登录
+
+
+
+# 9. Windows 右键菜单
+
+```powershell
+# 恢复 window10 菜单
+reg.exe add "HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" /f /ve
+
+# 恢复 window11 菜单
+reg.exe delete "HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" /va /f 
+
+# 重启 explorer
+taskkill /F /IM explorer.exe
+explorer.exe
+
+# 屏蔽右键记事本
+reg add "HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked" /v "{CA6CC9F1-867A-481E-951E-A28C5E4F01EA}" /f
+reg delete "HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked" /f
+```
+
