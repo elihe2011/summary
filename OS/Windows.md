@@ -96,7 +96,7 @@ pause
 
 
 
-# 5. C盘数据搬迁
+# 5. 数据搬迁
 
 先将Chrome下的数据剪切到D盘，然后建立软连接
 
@@ -154,7 +154,7 @@ WDAGUtilityAccount  S-1-5-21-2570433964-3893667463-618210156-504
 
 
 
-# 9. Windows 右键菜单
+# 9. 右键菜单
 
 ```powershell
 # 恢复 window10 菜单
@@ -170,5 +170,28 @@ explorer.exe
 # 屏蔽右键记事本
 reg add "HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked" /v "{CA6CC9F1-867A-481E-951E-A28C5E4F01EA}" /f
 reg delete "HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked" /f
+```
+
+
+
+# 10. 代理转发
+
+```powershell
+# WSL虚拟主机(172.25.79.231)
+docker run -d --name socks5 --network=host --restart=always serjs/go-socks5-proxy
+
+# 代理宿主机(192.168.3.3)
+# 端口转发
+netsh interface portproxy add v4tov4 listenport=1080 listenaddress=192.168.3.3 connectport=1080 connectaddress=172.25.79.231
+netsh interface portproxy show all
+netsh interface portproxy del v4tov4 listenport=1080 listenaddress=192.168.3.3
+
+# 设置防火墙
+netsh advfirewall firewall add rule name="Open Port 1080" dir=in action=allow protocol=TCP localport=1080
+netsh advfirewall firewall show rule name="Open Port 1080"
+netsh advfirewall firewall del rule name="Open Port 1080"
+
+# 测试主机(192.168.3.130)
+nc -x 192.168.3.3:1080 -vz 172.16.8.184 9092
 ```
 
