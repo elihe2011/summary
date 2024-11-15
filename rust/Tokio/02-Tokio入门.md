@@ -714,6 +714,935 @@ loop {
 
 
 
+# 5. I/O
+
+## 5.1 AsyncRead
+
+### 5.1.1 async fn read()
+
+`AsyncReadExt::read` 提供了一个向缓冲区读取数据的异步方法，返回读取的字节数。当 read() 返回 Ok(0) 时，表示流已经关闭
+
+```rust
+use tokio::fs::File;
+use tokio::io::{self, AsyncReadExt};
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let mut f = File::open("foo.txt").await?;
+    let mut buffer = [0; 10];
+
+    // read up to 10 bytes
+    let n = f.read(&mut buffer[..]).await?;
+
+    println!("The bytes: {:?}", &buffer[..n]);
+    Ok(())
+}
+```
+
+
+
+### 5.1.2 async fn read_to_end()
+
+`AsyncReadExt::read_to_end` 读取所有字节直到EOF
+
+```rust
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let mut f = File::open("foo.txt").await?;
+    let mut buffer = Vec::new();
+
+    // read the whole file
+    let n = f.read_to_end(&mut buffer).await?;
+
+    println!("The bytes: {:?}", &buffer[..n]);
+    Ok(())
+}
+```
+
+
+
+## 5.2 AsyncWrite
+
+### 5.2.1 async fn write()
+
+AsyncWriteExt::write 将缓冲区写入，并返回写入的字节数
+
+```rust
+use tokio::fs::File;
+use tokio::io::{self, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let mut f = File::create("foo.txt").await?;
+
+    // write bytes to the file
+    let n = f.write(b"just some bytes").await?;
+
+    // flush to the disk
+    f.flush().await?;
+
+    println!("{} bytes written to foo.txt", n);
+    Ok(())
+}
+```
+
+
+
+### 5.2.2 async fn write_all()
+
+`AsyncWriteExt::write_all` 将整个缓冲区写入
+
+```rust
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let mut f = File::create("foo.txt").await?;
+
+    // write all bytes
+    f.write_all("hello".as_bytes()).await?;
+
+    Ok(())
+}
+```
+
+
+
+## 5.3 辅助函数
+
+与 std 模块一样，`tokio::io` 模块也包含一些实用函数，以及用于处理标准输入、标准输出和标准错误的API
+
+`tokio::io::copy` 异步将一个 reader 的数据全部复制到一个 writer
+
+```rust
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let mut reader: &[u8] = b"hello world";
+    let mut writer = File::create("foo.txt").await?;
+
+    let n = io::copy(&mut reader, &mut writer).await?;
+
+    println!("{} bytes copied to `foo.txt`", n);
+    Ok(())
+}
+```
+
+
+
+## 5.4 Echo Server
+
+### 5.4.1 `TcpStream::split` 
+
+`io::split` 函数，可以将任何读写器类型分割成独立的 reader(AsyncRead) 和 writer(AsyncWrite) 两个句柄，在其内部使用一个 Arc 和 一个 Mutex。这种开销可以通过 TcpStream 来避免。
+
+`TcpStream::split` 接收流的 reference，并返回 reader 和 writer 句柄。因为使用了 reference，所以两个句柄必须留在 split() 被调用的同一个任务上。这种专门的 split 是零成本的。不需要 Arc 或 Mutex。TcpStream 还提供了 into_split，它支持跨任务移动句柄，但需要一个 Arc
+
+Echo 服务器：
+
+```rust
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+
+    loop {
+        let (mut socket, _) = listener.accept().await?;
+
+        tokio::spawn(async move {
+            let (mut reader, mut writer) = socket.split();
+
+            if io::copy(&mut reader, &mut writer).await.is_err() {
+                eprintln!("failed to copy data from socket");
+            }
+        });
+    }
+}
+```
+
+
+
+Echo 客户端：
+
+```rust
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let socket = TcpStream::connect("127.0.0.1:8080").await?;
+    let (mut rd, mut wr) = io::split(socket);
+
+    // write data in the background
+    let write_task = tokio::spawn(async move {
+        wr.write_all("hello".as_bytes()).await?;
+        wr.write_all("world".as_bytes()).await?;
+        wr.flush().await?;
+
+        Ok::<_, io::Error>(())
+    });
+
+    let mut buf = vec![0; 128];
+    loop {
+        let n = rd.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+
+        let s = String::from_utf8_lossy(&buf[0..n]);
+        println!("GOT: {:?}", s);
+    }
+
+    Ok(())
+}
+```
+
+
+
+### 5.4.2 手动复制
+
+```rust
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+
+    loop {
+        let (mut socket, _) = listener.accept().await?;
+
+        tokio::spawn(async move {
+            let mut buf = vec![0; 1024];
+
+            match socket.read(&mut buf).await {
+                Ok(0) => {
+                    // EOF
+                    return;
+                },
+                Ok(n) => {
+                    // copy the data back to socket
+                    if socket.write_all(&buf[..n]).await.is_err() {
+                        // unexpected socket error
+                        return;
+                    }
+                },
+                Err(_) => {
+                    // unexpected socket error
+                    return;
+                }
+            }
+        });
+    }
+}
+```
+
+
+
+### 5.4.3 分配缓冲区
+
+该策略是将一些数据从套接字中读入一个缓冲区，然后将缓冲区的内容写回套接字
+
+```rust
+let mut buf = vec![0; 1024];
+```
+
+所有跨调用 `.await` 的任务数据都必须由任务存储。在这种情况下，buf 被用于跨域 `.await` 调用。所有的任务数据被存储在一个单一的分配中。
+
+如果缓冲区由堆栈数组表示，每个接收的套接字所产生的任务内部结构
+
+```rust
+struct Task {
+    // internal task fields here
+    task: enum {
+        AwaitingRead {
+            socket: TcpStream,
+            buf: [BufferType],
+        },
+        AwaitignWriteAll {
+            socket: TcpStream,
+            buf: [BufferType],
+        }
+    }
+}
+```
+
+如果使用堆栈数组作为缓冲区类型，它将被内联存储在任务结构中。这将使任务结构变得非常大。此外，缓冲区的大小通常是以页为单位的。`$page-size + a-few-bytes`
+
+
+
+# 6. 分帧
+
+## 6.1 帧定义
+
+一个帧是两个对等体之间传输的数据单位。
+
+Redis 协议的帧定义：
+
+```rust
+use bytes::Bytes;
+
+enum Frame {
+    Simple(String),
+    Error(String),
+    Integer(u64),
+    Bulk(Bytes),
+    Null,
+    Array(Vec<Frame>),
+}
+```
+
+
+
+HTTP 协议的帧定义：
+
+```rust
+enum HttpFrame {
+    RequestHead {
+        method: Method,
+        uri: Uri,
+        version: Version,
+        headers: HeaderMap,
+    },
+    ResponseHead {
+        status: StatusCode,
+        version: Version,
+        headers: HeaderMap,
+    },
+    BodyChunk {
+        chunk: Bytes,
+    },
+}
+```
+
+
+
+Mini-Redis 的分帧，实现一个 Connection 结构，它包裹着一个 TcpStream 并读写 `mini_redis::Frame`
+
+```rust
+use tokio::net::TcpStream;
+use mini_redis::{Frame, Result};
+
+struct Connection {
+    stream: TcpStream,
+    // ... other fields here
+}
+
+impl Connection {
+    /// Read a frame from the connection
+    /// Returns `None` if EOF is reached
+    pub async fn read_frame(&mut self)
+    	-> Result<Option<Frame>>
+    {
+        // implementation here
+    }
+    
+    /// Write a frame to the connection
+    pub async fn write_frame(&mut self, frame: &Frame)
+    	-> Result<()>
+    {
+        // implementation here
+    }
+}
+```
+
+
+
+## 6.2 带缓冲的读取
+
+read_frame 方法再返回之前会等待一整帧的接收。对 TcpStream::read() 的一次调用可以返回一个任意数量的数据。它可能包含一整个帧，一个部分帧，或多个帧。如果收到一个部分帧，数据被缓冲，并从套接字中读取更多数据。如果收到多个帧，则返回第一个帧，其余的数据被缓冲，直到下次调用 read_frame。
+
+为实现这一点，Connection 需要一个读取缓冲区字段。数据从套接字中读入读取缓冲区。当一个帧被解析后，相应的数据就会从缓冲区中移除。
+
+使用 BytesMut 作为缓冲区类型。
+
+```rust
+use bytes::BytesMut;
+use tokio::net::TcpStream;
+
+pub struct Connection {
+    stream: TcpStream,
+    buffer: BytesMut,
+}
+
+impl Connection {
+    pub fn new(stream: TcpStream) -> Connection {
+        Connection {
+            stream,
+            // Allocate the buffer with 4kb of capacity
+            buffer: BytesMut::with_capacity(4096),
+        }
+    }
+}
+```
+
+Connection 上的 read_frame() 函数：
+
+```rust
+use mini_redis::{Frame, Result};
+
+pub async fn read_frame(&mut self) -> Result<Option<Frame>> {
+    loop {
+        if let Some(frame) = self.parse_frame()? {
+            return Ok(Some(frame));
+        }
+        
+        // Esure the buffer has capacity
+        if self.buffer.len() == self.cursor {
+            // Grow the buffer
+            self.buffer.resize(self.cursor * 2, 0);
+        }
+        
+        // Read into the buffer, tracking the number of bytes read
+        let n = self.stream.read(&mut self.buffer[self.cursor..]).await?;
+        
+        if n == 0 {
+            if self.cursor == 0 {
+                return Ok(None);
+            } else {
+                return Err("connection reset by peer".into())
+            }
+        } else {
+            // Update our cursor
+            self.cursur += n;
+        }
+    }
+}
+```
+
+
+
+## 6.3 解析
+
+parse_frame() 函数，解析规则分两步：
+
+- 确保一个完整的帧被缓冲，并找到该帧的结束索引
+- 解析该帧
+
+mini-redis crate 提供了一个用于这两个步骤的函数：
+
+- `Frame::check`
+- `Frame::parse`
+
+```rust
+use mini_reids::{Frame, Result};
+use mini_redis::frame::Error::Incomplete;
+use bytes::Buuf;
+use std::io::Cursor;
+
+fn parse_frame(&mut self) -> Result<Option<Frame>> {
+    // Create the `T: Buf` type
+    let mut buf = Cursor::new(&self.buffer[..]);
+    
+    // Check whether a full frame is available
+    match Frame::check(&mut self) {
+        Ok(_) => {
+            // Get the byte length of the frame
+            let len = buf.position as usize;
+            
+            // Reset the internal cursor for the call to `parse`
+            buf.set_position(0);
+            
+            // Parse the frame
+            let frame = Frame::parse(&mut buf)?;
+            
+            // Discard the frame from the buffer
+            self.buffer.advance(len);
+            
+            // Return the frame to the caller
+            Ok(Some(frame))
+        },
+        // Not enough data has been buffered
+        Err(Incomplete) => Ok(None),
+        // An error was encountered
+        Err(e) => Err(e.into()),
+    }
+}
+```
+
+
+
+## 6.4 带缓冲的写入
+
+write_frame() 函数将整个帧写到套接字中，为减少 write 的系统调用，写将被缓冲。
+
+考虑一个批量流帧，被写入的值是  `Frame::Bulk(Bytes)`。散装帧的线格式是一个帧头，它由`$`字符和以字节为单位的 数据长度组成。帧的大部分是 Bytes 值得内容。如果数据很大，将它复制到一个中间缓冲区将是很昂贵的。
+
+为了实现缓冲写入，将使用 BufWriter 结构，它被初始化为一个 `T: AsyncWrite` 并实现 `AsyncWrite` 本身。当在 `BufWriter` 上调用写时，不会直接写入，而是进入一个缓冲区。当缓冲区满时，再写入并清空缓冲区。
+
+Connection 结构：
+
+```rust
+use tokio::io::BufWriter;
+use tokio::net::TcpStream;
+use bytes::Bytes;
+
+pub struct Connection {
+    stream: BufWriter<TcpStream>,
+    buffer: BytesMut,
+}
+
+impl Connection {
+    pub fn new(stream: TcpStream) -> Connection {
+        Connection {
+            stream: BufWriter::new(stream),
+            buffer: BytesMut::with_capacity(4096),
+        }
+    }
+}
+```
+
+
+
+write_frame() 实现：
+
+```rust
+use tokio::io::{self, AsyncWriteExt};
+use mini_redis::Frame;
+
+async fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
+    match frame {
+        Frame::Simple(val) => {
+            self.stream.write_u8(b'+').await?;
+            self.stream.write_all(val.as_bytes()).await?;
+            self.stream.write_all(b"\r\n").await?;
+        }
+        Frame::Error(val) => {
+            self.stream.write_u8(b'-').await?;
+            self.stream.write_all(val.as_bytes()).await?;
+            self.stream.write_all(b"\r\n").await?;
+        }
+        Frame::Integer(val) => {
+            self.stream.write_u8(b':').await?;
+            self.write_decimal(*val).await?;
+        }
+        Frame::Null => {
+            self.stream.write_all(b"$-1\r\n").await?;
+        }
+        Frame::Bulk(val) => {
+            let len = val.len();
+            
+            self.stream.write_u8(b'$').await?;
+            self.write_decimal(len as u64).await?;
+            self.stream.write_all(val).await?;
+            self.stream.write_all(b"\r\n").await?;
+        }
+        Frame::Array(_val) => unimplemented!(),
+    }
+    
+    self.stream.flush().await;
+    
+    Ok(())
+}
+```
+
+写入函数由 AsyncWriteExt 提供，它们在 TcpStream 上也可用，但在没有中间缓冲区的情况下发出单字节的写入是不可取的：
+
+- write_u8  写一个字节
+- write_all 写入整个片段
+- write_decimal  由 mini-redis 实现
+
+
+
+# 7. 深入异步
+
+## 7.1 Futures
+
+一个调用时需要附加`.await`的函数，成为为 future
+
+future 是一个实现了 `std::future::Future` 特性的值，它们包含了正在进行的异步计算的值。
+
+`std::future::Future` trait 定义：
+
+```rust
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+pub trait Future {
+    type Output;
+    
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) 
+    	-> Poll<Self::Output>;
+}
+```
+
+Pin 类型是 Rust 能够支持异步函数中的借用方式。
+
+与其他语言实现 future 的方式不同，Rust future 并不代表在后台发生的计算，相反它就是计算本身。Future的所有者负责通过轮询 Future 来推进计算，可以通过调用 `Future::poll` 来实现。
+
+
+
+### 7.1.1 实现 future
+
+一个简单的 future 实现：
+
+- 等待到一个特定的时间点
+- 输出一些文本到 STDOUT
+- 产生一个字符串
+
+```rust
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
+
+struct Delay {
+    when: Instant,
+}
+
+impl Future for Delay {
+    type Output = &'static str;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if Instant::now() >= self.when {
+            println!("Delay for {:?} is ready", Instant::now());
+            Poll::Ready("ready")
+        } else {
+            // Ignore this line for now
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let when = Instant::now() + Duration::from_millis(10);
+    let future = Delay { when };
+
+    let out = future.await;
+    assert_eq!(out, "ready");
+}
+```
+
+
+
+### 7.1.2 作为Future的 async fn
+
+从异步函数中，可以对任何实现 Future 的值调用 `.await`。反过来，调用一个异步函数会返回一个实现 Future 的匿名类型。
+
+```rust
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
+
+struct Delay {
+    when: Instant,
+}
+
+impl Future for Delay {
+    type Output = &'static str;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if Instant::now() >= self.when {
+            println!("Delay for {:?} is ready", Instant::now());
+            Poll::Ready("ready")
+        } else {
+            // Ignore this line for now
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+}
+
+enum MainFuture {
+    // Initialized, never polled
+    State0,
+    // Waiting on `Delay`, i.e. the `future.await` line
+    State1(Delay),
+    // The future has completed
+    Terminated,
+}
+
+impl Future for MainFuture {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        use MainFuture::*;
+
+        loop {
+            match *self {
+                State0 => {
+                    let when = Instant::now() + Duration::from_secs(3);
+                    let future = Delay { when };
+                    *self = State1(future);
+                }
+                State1(ref mut my_future) => {
+                    match Pin::new(my_future).poll(cx) {
+                        Poll::Ready(out) => {
+                            assert_eq!(out, "ready");
+                            *self = Terminated;
+                            println!("Terminated on {:?}", Instant::now());
+                            return Poll::Ready(());
+                        }
+                        Poll::Pending => {
+                            return Poll::Pending;
+                        }
+                    }
+                }
+                Terminated => {
+                    panic!("future polled after completion");
+                }
+            }
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    MainFuture::State0.await;
+}
+```
+
+Rust futures 是一种状态机。MainFuture 被表示为一个 future 的可能状态的枚举。future 在 State0 状态下开始。当 poll 被调用时，future 试图尽可能地推进其内部状态。如果 future 能够完成，`Poll::Ready` 将被返回，其中包含异步计算的输出。
+
+如果 future 不能完成，通常是由于它所等待的资源没有准备好，那么就会返回 `Poll::Pending`。收到 `Poll::Pending` 是向调用者表面，future 将在稍后的试驾完成，调用者应该在稍后再次调用 poll。
+
+
+
+## 7.2 executors
+
+异步的 Rust 函数返回 future，future 必须被调用 poll 以推进其状态。future 由其他 future 组成。
+
+要运行异步函数，它们必须被传递给 `tokio::spawn` 或被 `#[tokio::main]` 注释的主函数。将生成的外层 future 提交给 Tokio 执行器。执行器负责在外部 future 上调用 `Future::poll`，推动异步计算的完成。
+
+
+
+### 7.2.1 mini Tokio
+
+```rust
+use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
+use futures::task;
+
+struct Delay {
+    when: Instant,
+}
+
+impl Future for Delay {
+    type Output = &'static str;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if Instant::now() >= self.when {
+            println!("Delay for {:?} is ready", Instant::now());
+            Poll::Ready("done")
+        } else {
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+}
+
+type Task = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+struct MiniTokio {
+    tasks: VecDeque<Task>,
+}
+
+impl MiniTokio {
+    fn new() -> MiniTokio {
+        MiniTokio {
+            tasks: VecDeque::new(),
+        }
+    }
+
+    /// Spawn a future onto the mini-tokio instance
+    fn spawn<F>(&mut self, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static
+    {
+        self.tasks.push_back(Box::pin(future));
+    }
+
+    fn run(&mut self) {
+        let waker = task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        while let Some(mut task) = self.tasks.pop_front() {
+            if task.as_mut().poll(&mut cx).is_pending() {
+                self.tasks.push_back(task);
+            }
+        }
+    }
+}
+
+fn main() {
+    let mut mt = MiniTokio::new();
+
+    mt.spawn(async {
+        let when = Instant::now() + Duration::from_millis(100);
+        let future = Delay { when };
+
+        let out = future.await;
+        assert_eq!(out, "done");
+    });
+
+    mt.run();
+}
+```
+
+一个具有所要求的延迟的 Delay 实例被创建和等待。但存在一个重大缺陷，执行器未进入睡眠状态。执行器不断地循环所有被催生的 future，并对它们进行 poll。大多数适合，这些 future 还没准备好执行更多的工作，并会再次返回 `Poll::Pending`，这个过程会消耗 CPU，效率不高。
+
+理想情况下，只在 future 能够取得进展时  poll future。这发生在任务被阻塞的资源准备好执行请求的操作时，如果任务想从一个 TCP 套接字中读取数据，那么在 TCP 套接字收到数据时 poll 任务。
+
+为了实现这一点，当一个资源被 poll 而资源又没有准备好时，一旦它过渡到 ready 状态，该资源将发送一个通知。
+
+
+
+## 7.3 Wakers
+
+Waker 是缺失的那部分。这是以一个系统，通过这个系统，资源能够通知等待的任务，资源已经准备好继续某些操作。
+
+`Future::poll` 的定义：
+
+```rust
+fn poll(self: Pin<&mut Self>, cx: &mut Context)
+	-> Poll<Self::Output>;
+```
+
+Poll 的 Context 参数有一个 waker() 方法。该方法返回一个与当前任务绑定的 Waker。该 Waker 有一个 wake() 方法。调用该方法向执行器发出信号，相关任务应该被安排执行。当资源过渡到准备好的状态时调用 wake()，通知执行者，poll 任务将能够取得进展。
+
+
+
+### 7.3.1 更新 Delay
+
+```rust
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
+use std::thread;
+
+struct Delay {
+    when: Instant,
+}
+
+impl Future for Delay {
+    type Output = &'static str;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if Instant::now() >= self.when {
+            println!("Delay for {:?} is ready", Instant::now());
+            Poll::Ready("done")
+        } else {
+            //cx.waker().wake_by_ref();
+            
+            // Get a handle to the waker for the current task
+            let waker = cx.waker().clone();
+            let when = self.when;
+
+            // Spawn a timer thread
+            thread::spawn(move || {
+                let now = Instant::now();
+                println!("Sleep wait for {:?}", &now);
+
+                if now < when {
+                    thread::sleep(when - now);
+                }
+
+                waker.wake();
+            });
+
+            Poll::Pending
+        }
+    }
+}
+```
+
+一旦请求的持续时间过了，调用的任务就会被通知，执行者可以确保任务被再次安排。
+
+更新 mini-tokio 以监听唤醒通知：
+
+- 当一个 future 返回 `Poll::Pending` 时，它必须确保在某个时间点对 waker 发出信息。忘记这样做会导致任务无限地挂起
+- 在返回 `Poll::Pending` 后忘记唤醒一个任务是一个常见的错误来源
+
+在返回 `Poll::Pending` 之前，调用 `cx.waker().wake_by_ref()`，这是为了满足 future 契约。通过返回 `Poll::Pending`，给唤醒者发信号。因为还没有实现定时器现场，所以在内联中给唤醒者发信号。这样做的结果是，future 将立即被重新安排，再次执行，而且可能还没有准备好完成。
+
+注意，运行对 waker 发出超过必要次数的信号。即使没有准备好继续操作，还是向唤醒者发出信号。除了浪费一些 CPU 周期外，并没有什么问题，但这种特殊的实现方式会导致一个繁忙的循环。
+
+
+
+## 7.4 更新 Mini Tokio
+
+更新 Mini Tokio 以接收 waker 的通知。在 poll future 时将这个 waker 传递给 future。
+
+更新后的 Mini Tokio 将使用一个通道来存储预定任务。通道运行任务从任何线程被排队执行。Wakers 必须是 Send 和 Sync，所以使用来自 crossbeam crate 的通道，因为标准库的通道不是 Sync。
+
+Send 和 Sync 特性是 Rust 提供的与并发性有关的标记特性。可以被发送到不同线程的类型是 Send。大多数类型都是 Send，但像 Rc 这样的类型则不是。可以通过不可变的引用并发访问的类型是 Sync。一个类型可以是 Send，但不是 Sync 一个很好的例子是 Cell，它可以通过不改变的引用被修改，因此并发访问是不安全的。
+
+```rust
+use crossbeam::channel;
+use std::sync::{Arc, Mutex};
+
+struct MiniTokio {
+    scheuled: channel::Receiver<Arc<Task>>,
+    sender: channel::Sender<Arc<Task>>,
+}
+
+struct Task {
+    future: Mutex<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    executor: channel::Sender<Arc<Task>>,
+}
+
+impl Task {
+    fn schedule(self: &Arc<Self>) {
+        self.executor.send(self.clone());
+    }
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
