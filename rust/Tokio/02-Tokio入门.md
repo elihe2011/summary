@@ -1566,7 +1566,7 @@ Send 和 Sync 特性是 Rust 提供的与并发性有关的标记特性。可以
 
 ```rust
 use crossbeam::channel;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 struct MiniTokio {
     scheuled: channel::Receiver<Arc<Task>>,
@@ -1574,6 +1574,18 @@ struct MiniTokio {
 }
 
 struct Task {
+    // This will be filled in soon
+}
+```
+
+Wakers 是 sync，并且可以被克隆。当 wake 被调用时，任务必须被安排执行。为了实现这一点，需要有一个通道。当 `wake()` 被调用时，任务被推到通道的发送任务。Task 结构将实现唤醒逻辑，要做到这一点，它需要同时包含催生的 future 和通道的发送部分。
+
+```rust
+use std::sync::{Arc, Mutex}
+
+struct Task {
+    // The `Mutex` is to make `Task` implemet `Sync`. Only one thread accesses 
+    // `future` at any given time. 
     future: Mutex<Pin<Box<dyn Future<Output = ()> + Send>>>,
     executor: channel::Sender<Arc<Task>>,
 }
@@ -1585,23 +1597,1257 @@ impl Task {
 }
 ```
 
+为了安排任务，Arc 被克隆并通过通道发送。将 schedule 函数与 `std::task::Waker` 挂钩。标准库提供了一个低级别的 API，通过手动构建 vtable 来完成这个任务。这种策略为实现者提供了最大的灵活性，但需要一堆不安全的模板代码。不直接使用 `RawWakerVTable`，而是使用由 future crate 提供的 ArcWaker 工具
+
+```rust
+use futures::task::{self, ArcWake};
+use std::sync::Arc;
+
+impl ArcWake for Task {
+    fn wake_by_ref(arc_self: &arc<Self>) {
+        arc_self.schedule();
+    }
+}
+```
+
+当上面的定时器线程调用 `waker.wake()` 时，任务被推送到通道中。接下来，在 `MiniTokio::run()` 函数中实现接收和执行任务。
+
+```rust
+impl MiniTokio {
+    fn run(&self) {
+        while let Ok(task) = self.scheduled.recv() {
+            task.poll();
+        }
+    }
+    
+    /// Initialize a new mini-tokio instance
+    fn new() -> MiniTokio {
+        let (sender, scheduled) = channel::unbounded();
+        
+        MiniTokio { scheduled, sender }
+    }
+    
+    /// Spawn a future onto the mini-tokio instance.
+    /// This given future is wrapped with the `Task` harness and pushed into the
+    /// `scheduled` queue. The future will be executed when `run` is called
+    fn spawn<F>(&self, future: F)
+    where
+    	F: Future<Output = ()> + Send + 'static,
+    {
+        Task::spawn(future, &self.sender);
+    }
+}
+
+impl Task {
+    fn poll(self: Arc<Self>) {
+        // Crate a waker from the `Task` instance. This
+        // uses the `ArcWake` impl from above.
+        let waker = task::waker(self.clone());
+        let mut cx = Context::from_waker(&waker);
+        
+        // No other thread ever tries to lock the future
+        let mut future = self.future.try_lock().unwrap();
+        
+        // Poll the future
+        let _ = future.as_mut().poll(&mut cx);
+    }
+    
+    // Spawns a new tasks with the given future
+    // Initializes a new Task harness containing the given future and pushes it
+    // onto `sender`. The receiver half of the channel will get the task and execute it
+    fn spawn<F>(future: F, sender: &channel::Sender<Arc<Task>>)
+    where
+    	F: Future<Output = ()> + Send + 'static,
+    {
+        let task = Arc::new(Task {
+            future: Mutex::new(Box::pin(future)),
+            executor: sender.clone(),
+        });
+        
+        let _ = sender.send(task);
+    }
+}
+```
+
+实现功能：
+
+- `MiniTokio::run()` 被实现。该函数在一个循环中运行，接收来自通道的预定任务。由于任务咋被唤醒时被推入通道，这些任务在执行时能够取得进展
+- `MiniTokio::new()` 和 `MiniTokio::spawn()` 函数被调整为使用通道而不是 `VecDeque`。当新任务被催生时，它们会被赋予一个通道的发送者部分的克隆，任务可以用它来在运行时安排自己。
+- `Task::poll()` 函数使用来自 futures crate 的 `ArcWake` 工具创建 waker。waker 被用来创建一个 `task::Context`。该 `task::Context` 被传递给 poll
+
+
+
+## 7.5 摘要
+
+Rust 的 `async/await` 功能是由 traits 支持的。这允许第三方 crate，如 Tokio，提供执行细节：
+
+- Rust 的异步操作是 lazy，需要调用者来 poll 它们
+- Wakers 被传递给 futures，以将一个 future 与 调用它的任务联系起来
+- 当以一个资源没有准备好完成一个操作时，`Poll::Pending` 被返回，任务的 waker 被记录
+- 当资源准备好时，任务的 waker 会被通知
+- 执行者收到通知并安排任务的执行
+- 任务再次被 poll，这次资源已经准备好了，任务取得了进展
+
+
+
+## 7.6 未尽事宜
+
+Rust 的异步模型允许单个 future 在执行时跨任务迁移，考虑一下下面的情况
+
+```rust
+use futures::future::poll_fn;
+use std::future::Future;
+use std::pin::Pin;
+
+#[tokio::main]
+async fn main() {
+    let when = Instance::now() + Duration::from_millis(10);
+    let mut delay = Some(Deplay { when });
+    
+    poll_fn(move |cx| {
+       let mut delay = delay.take().unwrap();
+       let res = Pin::new(&mut delay).poll(cx);
+        assert!(res.is_pending());
+        
+        tokio::spawn(async move {
+            delay.await;
+        });
+        
+        Poll::Ready(());
+    }).await;
+}
+```
+
+`poll_fn` 函数使用闭包创建 Future 实例。当实现 future 时，关键是要假设每一次对 poll 的调用都可能提供一个不同的 Waker 实例。poll 函数必须用新的唤醒者来更新任何先前记录的唤醒者。
+
+在早期实现的 Delay，每次 poll 时都好产生一个新的 线程。但如果 poll 太频繁，效率就会很低。(例如，如果 select! 这个 future 和其他的 future，只要其中一个有事件，这两个都会被 poll)。一种方法是记住你是否已经产生了一个线程，如果你还没有产生一个线程，就只产生一个新的线程。然而，这样做，必须确保线程的 Waker 在以后调用 poll 时被更新，否则就不能唤醒最近的 Waker。
+
+为修复之前的实现，这样做：
+
+```rust
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
+use std::thread;
+use std::time::{Duration, Instant};
+
+struct Delay {
+    when: Instant,
+    // This Some when we have spawned a thread, and None otherwise
+    waker: Option<Arc<Mutex<Waker>>>,
+}
+
+impl Future for Delay {
+    type Output = ();
+    
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        // First, if this is the first time the future is called, spawn the
+        // timer thread. If the timer thread is already running, ensure the
+        // stored `Waker` matches the current task's waker
+        if let Some(waker) = &self.waker {
+            let mut waker = waker.lock().unwrap();
+            
+            // Check if the stored waker matches the current task' waker.
+            // This is necessary as the `Delay` future instance may move to
+            // a different task between calls to `poll`. If this happens, the
+            // waker contained by the given `Context` will differ and we
+            // must update our stored waker to reflect this change
+            if !waker.will_wake(cx.waker()) {
+                *waker = cx.waker().clone();
+            }
+        } else {
+            let when = self.when
+            let waker = Arc::new(Mutex::new(cx.waker().clone()));
+            self.waker = Some(waker.clone());
+            
+            // This is the first time `poll` is called, spawn the timer thread
+            thread::spawn(move || {
+                let now = Instant::now();
+                
+                if now < when {
+                    thread::sleep(when - now);
+                }
+                
+                // The duration has elapsed, Notify the caller by invoking the waker
+                let waker = waker.lock().unwrap();
+                waker.wake_by_ref();
+            });
+        }
+        
+        // Once the waker is stored and the timer thread is started, it is time to
+        // check if the delay has completed. This is done by checking the current
+        // instant. If the duration has elapsed, then the future has completed 
+        // and `Poll::Ready` is returned
+        if Instant::now() > self.when {
+            Poll::Ready(())
+        } else {
+            // The duration has not elapsed, the future has not completed so return `Poll::Pending`
+            Poll::Pending
+        }
+    } 
+}
+```
+
+
+
+### 7.6.1 Notify 工具
+
+Wakers 是异步 Rust 工作方式的集成。在 Delay 情况下，可以通过使用 `tokio::sync::Notify` 工具，完成用 `async/await` 实现它。它提供了一个基本的任务通知机制。它处理 waker 的细节，包括确保记录的 waker 与当前任务相匹配。
+
+使用 Notify，可以像用 `async/await` 实现一个 Delay 函数
+
+```rust
+use tokio::sync::Notify;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use std::thread;
+
+async fn delay(dur: Duration) {
+    let when = Instant::now() + dur;
+    let notify = Arc::new(Notify::new());
+    let notify2 = notify.clone();
+    
+    thread::spawn(move || {
+        let now = Instant::now();
+        
+        if now < when {
+            thread::sleep(when - now);
+        }
+        
+        notify2.notify_one();
+    });
+    
+    notify.notified().await;
+}
+```
+
+
+
+# 8. select
+
+## 8.1 `tokio::select!`
+
+`tokio::select!` 宏允许在多个异步计算中等待，并在单个计算中完成返回
+
+```rust
+use tokio::sync::oneshot;
+
+#[tokio::main]
+async fn main() {
+    let (tx1, rx1) = oneshot::channel();
+    let (tx2, rx2) = oneshot::channel();
+
+    tokio::spawn(async {
+        let _ = tx1.send("one");
+    });
+
+    tokio::spawn(async {
+        let _ = tx2.send("two");
+    });
+
+    tokio::select! {
+        val = rx1 => {
+            println!("rx1 completed first with {:?}", val);
+        }
+        val = rx2 => {
+            println!("rx2 completed first with {:?}", val);
+        }
+    }
+}
+```
+
+使用了两个 oneshot 通道，任何一个通道都可以先完成。`select!` 语句在两个通道上等待，并将 val 与 任务返回的值绑定。当 tx1 或 tx2 完成时，相关的块被执行。
+
+没有完成的分支被放弃。在这个例子中，计算正在等待每个通道的 `oneshot::Receiver`。尚未完成的通道的 `oneshot::Receiver` 被放弃。
+
+### 8.1.1 取消
+
+在异步 Rust 中，取消操作是通过丢弃一个 future 来实现。异步 Rust 操作是使用 futures 实现的，而 futures 是 lazy 的。只有当任务被 poll 时，操作才会继续进行。如果 future 被丢弃，操作就不能进行，因为所有相关的状态都被丢弃了。
+
+Futures 或其他类型可以实现 `Drop` 来清理后台资源。Tokio 的 `oneshot::Receiver` 通过向 `Sender` half 发送一个关闭的通知来实现 `Drop`。sender 部分可以收到这个通知，并用过丢弃来中转正在进行的操作。
+
+```rust
+use tokio::sync::oneshot;
+
+async fn some_operation() {
+    // compute value here
+}
+
+#[tokio::main]
+async fn main() {
+    let (mut tx1, rx1) = oneshot::channel();
+    let (tx2, rx2) = oneshot::channel();
+
+    tokio::spawn(async {
+        // Select on the operation and the oneshot's `closed()` notification
+        tokio::select! {
+            val = some_operation() => {
+                let _ = tx1.send(val);
+            }
+
+            _ = tx1.closed() => {
+                // `some_operation()` is canceled, the task completes and `tx` is dropped
+            }
+        }
+    });
+
+    tokio::spawn(async {
+        let _ = tx2.send("two");
+    });
+
+    tokio::select! {
+        val = rx1 => {
+            println!("rx1 completed first with {:?}", val);
+        }
+        val = rx2 => {
+            println!("rx2 completed first with {:?}", val);
+        }
+    }
+}
+```
+
+
+
+### 8.1.2 Future 实现
+
+```rust
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::sync::oneshot;
+
+struct MySelect {
+    rx1: oneshot::Receiver<&'static str>,
+    rx2: oneshot::Receiver<&'static str>,
+}
+
+impl Future for MySelect {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if let Poll::Ready(val) = Pin::new(&mut self.rx1).poll(cx) {
+            println!("rx1 completed first with: {:?}", val);
+            return Poll::Ready(());
+        }
+
+        if let Poll::Ready(val) = Pin::new(&mut self.rx2).poll(cx) {
+            println!("rx2 completed first with: {:?}", val);
+            return Poll::Ready(());
+        }
+
+        Poll::Pending
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let (tx1, rx1) = oneshot::channel();
+    let (tx2, rx2) = oneshot::channel();
+
+    tokio::spawn(async {
+        let _ = tx1.send("one");
+    });
+
+    tokio::spawn(async {
+        let _ = tx2.send("two");
+    });
+
+    MySelect { rx1, rx2 }.await;
+}
+```
+
+MySelect future 包含每个分支的 future。当 MySelect 被 poll 时，第一个分支被 poll。如果它准备好了，该值被使用，MySelect 完成。在 `.await` 收到一个 future 的输出后，该 future 被放弃。这导致两个分支的 futures 都被丢弃。由于有一个分支没有完成，所以该操作实际上被取消了。
+
+在 MySelect 实现中，没有明确使用 Context 参数。相应的是，waker 的要求是通过传递 cx 给内部 future 来满足的。由于内部 future 也必须满足 waker 的要求，通过只在收到内部 future 的 `Poll::Pending` 时返回 `Poll::Pending`，MySelect 也满足 waker 的要求
+
+
+
+# 8.2 语法
+
+`select!` 宏可以处理两个以上的分支，目前的限制是 64 个分支，每个分支的结构为：
+
+```
+<pattern> = <async expression> => <handler>,
+```
+
+当 select 宏被评估时，所有的 `<async expression>` 被聚集起来被同时执行。当一个表达式完成时，其结果与 `<pattern>` 匹配。如果结果与模式匹配，那么所有剩余的异步表达式被放弃，`<handler>` 被执行。`<handler>` 表达式可以访问由 `<pattern>` 建立的任何绑定关系。
+
+在一个 oneshot 通道和一个 TCP 连接的输出上进行选择。
+
+```rust
+use std::net::TcpStream;
+use tokio::sync::oneshot;
+
+#[tokio::main]
+async fn main() {
+    let (tx, rx) = oneshot::channel();
+
+    // Spawn a task that sends a message over the oneshot
+    tokio::spawn(async move {
+        tx.send("done").unwrap();
+    });
+
+    tokio::select! {
+        socket = TcpStream::connect("localhost:3456") => {
+            println!("Socket connected {:?}", socket);
+        }
+
+        msg = rx => {
+            println!("Got a message: {:?}", msg);
+        }
+    }
+}
+```
+
+使用一个 oneshot 并接受来自 TcpListener 的套接字。accept 循环一个运行遇到错误或 `rx` 收到一个值。
+
+```rust
+use std::io;
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let (tx, rx) = oneshot::channel();
+
+    tokio::spawn(async move {
+        tx.send(()).unwrap()
+    });
+
+    let mut listener = TcpListener::bind("localhost:3456").await?;
+
+    tokio::select! {
+        _ = async {
+            loop {
+                let (socket, _) = listener.accept().await?;
+                tokio::spawn(async move { process(socket).await });
+            }
+
+            // Help the rust the inference out
+            Ok::<_, io::Error>(())
+        } => {}
+        _ = rx => {
+            println!("terminating accept loop");
+        }
+    }
+
+    Ok(())
+}
+```
+
+
+
+## 8.3 返回值
+
+`tokio::select!` 宏返回被评估的 `<handler>` 表达式的结果
+
+```rust
+async fn computation1() -> String {
+    // .. computation
+}
+
+async fn computation2() -> String {
+    // .. computation
+}
+
+#[tokio::main]
+async fn main() {
+    let out = tokio::select! {
+        res1 = computation1() => res1,
+        res2 = computation2() => res2,
+    };
+    
+    println!("Got = {}", out);
+}
+```
+
+
+
+## 8.4 错误
+
+使用 `?` 操作符会从表达式中传播错误。
+
+```rust
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use std::io;
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    // [setup `rx` oneshot channel]
+    
+    let listener = TcpListener::bind("localhost:3456").await?;
+    
+    tokio::select! {
+        res = async {
+            loop {
+                let (socket, _) = listener.accept().await?;
+                tokio::spawn(async move { process(socket) });
+            }
+            
+            // Help the rust type inference out
+            Ok::<_, io::Error>(())
+        } => {
+            res?;
+        }
+        _ = rx => {
+            println!("terminating accept loop");
+        }
+    }
+    
+    Ok(())
+}
+```
+
+
+
+## 8.5 模型匹配
+
+`select!` 宏分支语法：
+
+```
+<pattern> = <async expression> => <handler>,
+```
+
+从多个 MPSC 通道接收信息：
+
+```rust
+use tokio::sync::mpsc;
+
+#[tokio::main]
+async fn main() {
+    let (mut tx1, mut rx1) = mpsc::channel(128);
+    let (mut tx2, mut rx2) = mpsc::channel(128);
+    
+    tokio::spawn(async move {
+        // Do something w/ `tx1` and `tx2`
+    });
+    
+    tokio::select! {
+        Some(v) = rx1.recv() => {
+            println!("Got {:?} from rx1", v);
+        }
+        Some(v) = rx2.recv() => {
+            println!("Got {:?} from rx2", v1);
+        }
+        else => {
+            println!("Bot channels closed");
+        }
+    }
+}
+```
+
+
+
+## 8.6 借用
+
+当spawn任务时，被spawn的异步表达式必须拥有其所有的数据。`select!` 宏没有这个限制。每个分支的异步表达式都可以借用数据并同时操作。按照 Rust 的借用规则，多个异步表达式可以不变地借用一个数据，或者一个异步表达式可以可变地借用一个数据
+
+同时向每个不同的 TCP 目的地发送相同的数据
+
+```rust
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
+use std::io;
+use std::net::SocketAddr;
+
+async fn race(
+	data: &[u8],
+	addr1: SocketAddr,
+    addr2: SocketAddr
+) -> io:Result<()> {
+    tokio::select! {
+        Ok(_) = async {
+            let mut socket = TcpStream::connect(addr1).await?;
+            socket.write_all(data).await?;
+            Ok::<_, io::Error>(())
+        } => {}
+        Ok(_) = async {
+            let mut socket = TcpStream::connect(addr2).await?;
+            socket.write_all(data).await?
+            Ok::<_, io::Error>(())
+        } => {}
+        else => {}
+    };
+    
+    Ok(())
+}
+```
+
+data 变量被从两个异步表达式中不可变地借用。当其中一个操作成功完成时，另一个就会被放弃。因为在 `Ok(_)` 上进行模式匹配，如果一个表达式失败，另一个表达式继续执行。
+
+当涉及到每个分支的 `<handler>` 时，`select!` 保证只运行一个 `<handler>`。正因如此，每个 `<handler>` 都可以相互借用相同的数据。
+
+将两个处理程序都修改了 out：
+
+```rust
+use tokio::sync::oneshot;
+
+#[tokio::main]
+async fn main() {
+    let (tx1, rx1) = oneshot::channel();
+    let (tx2, rx2) = oneshot::channel();
+    
+    let mut out = String::new();
+    
+    tokio::spawn(async move {
+        // Send values on `tx1` and `tx2`
+    });
+    
+    tokio::select! {
+        _ = rx1 => {
+            out.push_str("rx1 completed");
+        }
+        
+        _ = rx2 => {
+            out.push_str("rx2 completed");
+        }
+    }
+    
+    println!("{}", out);
+}
+```
+
+
+
+## 8.7 循环
+
+`select!` 宏经常在循环中使用。
+
+```rust
+use tokio::sync::mpsc;
+
+#[tokio::main]
+async fn main() {
+    let (tx1, mut rx1) = mpsc::channel(128);
+    let (tx2, mut rx2) = mpsc::channel(128);
+    let (tx3, mut rx3) = mpsc::channel(128);
+    
+    loop {
+        let msg = tokio::select! {
+            Some(msg) = rx1.recv() => msg,
+            Some(msg) = rx2.recv() => msg,
+            Some(msg) = rx3.recv() => msg,
+            else => { break }
+        };
+        
+        println!("Got {}", msg);
+    }
+    
+    println!("All channels have been closed");
+}
+```
+
+在三个通道接收器上进行 select，当在任何一个通过上接收到消息时，它被写入 STDOUT。当一个通道被关闭时，`recv()` 返回 None。通过使用模式匹配，`select!` 宏继续在其余通道上等待。当所有的通道都关闭时，else 分支被评估，循环被终止。
+
+`select!` 宏随机挑选分支，首先检查是否准备就绪。当多个通道有等待值时，将随机挑选以一个通道来接收。
+
+
+
+## 8.8 恢复异步操作
+
+运行异步函数，直到它完成或者在通道上收到以一个偶数
+
+```rust
+async fn action() {
+    // Some asynchronous logic
+}
+
+#[tokio::main]
+async fn main() {
+    let (mut tx, mut rx) = tokio::sync::mpsc::channel(128);
+    
+    let operation = action();
+    tokio::pin!(operation);
+    
+    loop {
+        tokio::select! {
+            _ = &mut operation => break,
+            Some(v) = rx.recv() => {
+                if v % 2 == 0 {
+                    break;
+                }
+            }
+        }
+    }
+}
+```
+
+请注意，不要再 `select!` 宏中调用 `action()`，而是再循环之外调用它。`action()` 的返回值被分配给 operation，而不调用 `.await`。然后再 operation 上调用 `tokio::pin!`
+
+在 `select!` 循环中，需要传入 `&mut operation`。循环的每个迭起都使用相同的 operation，而不是对 `action()` 发出一个新的调用。
+
+另一个 `select!` 分支从通道接收消息，如果消息时偶数，则完成了循环。否则，再次启动 `select!`
+
+`tokio::pin!` 实现了 `.await` 一个引用，被引用的值必须被 pin 或者实现 Unpin
+
+
+
+重新实现逻辑：
+
+- 在通道上等待一个偶数
+- 使用偶数作为输入启动异步操作
+- 等待操作，但同时在通道上监听更多的偶数
+- 如果在现有的操作完成之前收到一个新的偶数，则中止现有的操作，用心的偶数重新开始操作
+
+```rust
+async fn action(input: Option<32>) -> Option<String> {
+    // If the input is `None`，return `None`
+    // This could also be written as `let i = input?;`
+    let i = match input {
+        Some(input) => input,
+        None => return None,
+    };
+    // async logic here
+}
+
+#[tokio::main]
+async fn main() {
+    let (mut tx, mut rx) = tokio::sync::mpsc::channel(128);
+    
+    let mut done = false;
+    let operation = action(None);
+    tokio::pin!(operation);
+    
+    tokio::spawn(async move {
+        let _ = tx.send(1).await;
+        let _ = tx.send(2).await;
+        let _ = tx.send(3).await;
+    });
+    
+    loop {
+        tokio::select! {
+            res = &mut operation, if !done => {
+                done = true;
+                
+                if Some(v) = res {
+                    println!("GOT = {}", v);
+                    return;
+                }
+            }
+            
+            Some(v) => rx.recv() {
+                if v % 2 == 0 {
+                    // `.set` is a method on `Pin`
+                    operation.set(action(Some(v)));
+                    done = false;
+                }
+            }
+        }
+    }
+}
+```
+
+`async fn` 函数在循环外调用，并被分配给 operation。operation 变量被 pin 住。循环在 operation 和通道接收器上都进行 select。
+
+注意 action 时如何将 `Option<i32>` 作为参数的。在接收第一个偶数之前，需要将 operation 实例化为某种东西。让 action 接收 `Option` 并返回 Option，如果传入的是 None，则返回None。在第一个循环迭代中，operation 立即以 None 完成。
+
+第一个分支的新语法 `, if !done`，他山一个分支的前提条件。
+
+
+
+## 8.9 任务的并发性
+
+`tokio::spoon` 和 `select!` 都可以运行并发的异步操作。然后，用于运行并发操作的策略是不同的。`tokio::spawn` 函数接收一个异步操作并生成一个新的任务来运行它。任务是 tokio 运行时安排的对象。两个不同的任务由 Tokio 独立调度。它们可能同时运行在不同的操作系统线程上。正因如此，一个spawn的任务和一个spawn的线程有同样的限制，不能借用。
+
+`select!` 宏在同一个任务上勇士运行所有分支，因为 `select!` 宏的所有分支都在用一个任务上执行，所以它们永远不会同时运行。`select!` 宏在一个任务上复用异步操作。
+
+
+
+# 9. stream
+
+流时一个数值的异步序列。它是 Rust 的 `srd::iter::Iterator` 的异步等价物，由 Stream trait 表示。流可以在 async 函数中被迭代。它们也可以使用适配器进行转换。Tokio 在 StreamExt trait 上提供了许多常见的适配器
+
+Tokio 的 Stream 工具存在于 `tokio-stream` crate 中：
+
+```toml
+tokio-stream = "0.1"
+```
+
+
+
+## 9.1 迭代
+
+目前，Rust编程语言不支持异步 for 循环，相反，流的迭代是通过与 `StreamExt::next()` 搭配的 `while let` 循环完成的
+
+```rust
+use tokio_stream::StreamExt;
+
+#[tokio::main]
+async fn main() {
+    let mut stream = tokio_stream::iter(&[1, 2, 3]);
+    
+    while let Some(v) stream.next().await {
+        println!("GOT = {:?}", v);
+    }
+}
+```
+
+
+
+## 9.2 Mini-Redis 广播
+
+```rust
+use mini_redis::client;
+use tokio_stream::StreamExt;
+
+async fn publish() -> mini_redis::Result<()> {
+    let mut client = client::connect("127.0.0.1:6379").await?;
+
+    // Publish some data
+    client.publish("numbers", "1".into()).await?;
+    client.publish("numbers", "two".into()).await?;
+    client.publish("numbers", "3".into()).await?;
+    client.publish("numbers", "four".into()).await?;
+    client.publish("numbers", "five".into()).await?;
+    client.publish("numbers", "6".into()).await?;
+
+    Ok(())
+}
+
+async fn subscribe() -> mini_redis::Result<()> {
+    let client = client::connect("127.0.0.1:6379").await?;
+
+    let subscriber = client.subscribe(vec!["numbers".to_string()]).await?;
+    let messages = subscriber.into_stream();
+
+    tokio::pin!(messages);
+
+    while let Some(msg) = messages.next().await {
+        println!("Got = {:?}", msg);
+    }
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> mini_redis::Result<()> {
+    tokio::spawn(async {
+        publish().await
+    });
+
+    subscribe().await?;
+
+    println!("DONE");
+    Ok(())
+}
+```
+
+在订阅之后，`into_stream()` 被调用到返回的订阅者上。这将消耗 subscriber，返回一个 stream，在消息达到时产生消息。在开始迭代消息前，注意流用 `tokio::pin` 在 栈上的。在一个流上调用 `next()` 需要被 pin 住。`into_stream()` 函数返回的是一个没有 pin 的流，必须明确地 pin 它，以便对其进行遍历
+
+当一个 Rust 值在内存中不能在被移动时，它就被 pin 了。被 bin 的值的一个关键属性是，指针可以被带到被 pin 的数据上，并且调用者可以确信该指针保持有效。这个特性被 `async/await` 点借用数据。
+
+
+
+## 9.3 适配器
+
+接受一个 stream 并返回另一个 stream 的函数通常被称为 "stream adaptor"，因为它们是 "适配器模式" 的一种形式。常用的适配器包括 map、take 和 filter
+
+通过 take 实现限流：
+
+```rust
+let messages = subscriber.into_stream().take(3);
+```
+
+通过 filter 过滤不符合条件的消息：
+
+```rust
+let messages = subscriber.into_stream()
+	.filter(|msg| match msg {
+        Ok(msg) if msg.content.len() == 1 => true,
+        _ => false,
+	})
+	.map(|msg| msg.unwrap().content)
+	.take(3)；
+```
+
+
+
+## 9.4 实现stream
+
+stream trait 与 future trait 非常相似
+
+```rust
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+pub trait Stream {
+    type Item;
+    
+    fn poll_next(
+    	self: Pin<&mut Self>,
+        cx: &mut Context<'_>
+    ) -> Poll<Option<Self::Item>>;
+    
+    fn size_hint(&self) -> (usize, Option<usize) {
+        (0, None)
+    }
+}
+```
+
+`Stream::poll_next()` 函数很像 `Future::poll`，只是它可以被反复调用，以便从流中接收许多值。当一个流还没有准备好返回一个值时，就会返回 `Poll::Pending` 来代替。该任务的 waker 被注册。一旦流应该被再次 poll，该唤醒者将被通知。
+
+`size_hint()` 方法与迭代器的使用方法相同。
+
+将 Delay Future 转换为 Stream，以 10 毫秒的间隔产生三次 `()`
+
+```rust
+use tokio_stream::Stream;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::Duration;
+
+struct Interval {
+    rem: usize,
+    delay: Delay,
+}
+
+impl Stream for Interval {
+    type Item = ();
+    
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<()>> {
+        if self.rem == 0 {
+            // No more delays
+            return Poll::Ready(None);
+        }
+        
+        match Pin::new(&mut self.delay).poll(cx) {
+            Poll::Ready(_) => {
+                let when = self.delay.when + Duration::from_millis(10);
+                self.delay = Delay { when };
+                self.rem -= 1;
+                Poll::Ready(Some(()))
+            }
+            Poll::Pending => Poll:Pending,
+        }
+    }
+}
+```
+
+
+
+### 9.4.1 async-stream
+
+使用 Stream Trait 手动实现流很繁琐的。但 Rust 编程语言目前还不支持用于自定义流的 `async/await` 语法。
+
+`async-stream` crate 可以作为一个临时的解决方案。这个 crate 提供了 `async_stream!` 宏，将输入转化为一个流。使用这个 crate，上面的 interval 可以这样实现：
+
+```rust
+use async_stream::stream;
+use std::time::{Duration, Instant};
+
+stream! {
+    let mut when = Instant::now();
+   	for _ in 0..3 {
+        let delay = Delay { when };
+        delay.await;
+        yield();
+        when += Duration::from_millis(10);
+    }
+}
+```
+
+
+
+# 10. 桥接同步代码
+
+## 10.1 `#[tokio::main]`
+
+`#[tokio::main]` 宏将主函数替换为非同步主函数，它启动一个运行时，然后调用代码
+
+```rust
+#[tokio::main]
+async fn main() {
+    println!("Hello world");
+}
+```
+
+代码转换为
+
+```rust
+fn main() {
+    tokio::runtime::Builder::new_multi_thread()
+    	.enable_all()
+    	.build()
+    	.unwrap()
+    	.block_on(async {
+            println!("Hello world");
+    	})
+}
+```
+
+
+
+## 10.2 到 mini-redis 的同步接口
+
+通过存储 Runtime 对象并使用其 block_on 方法来构建 mini-redis 的同步接口
+
+封装的接口是异步的 client 类型：
+
+- Client::get
+- Client::set
+- Client::set_expires
+- Client::publish
+- Client::subscribe
+
+`blocking_client.rs`，async Client 类型的封装结构来初始化：
+
+```rust
+use tokio::net::ToSocketAddrs;
+use tokio::runtime::Runtime;
+
+pub use crate::client::Message;
+
+/// Established connection with a Redis server
+pub struct BlockingClient {
+    /// The asynchronous `Client`
+    inner: crate::client::Client,
+    
+    /// A `current_thread` runtime for executing operations on
+    /// the asynchronous client in a blocking manner
+    rt: Runtime,
+}
+
+pub fn connect<T: ToSocketAddrs>(addr: T) -> crate::Result<BlockingClient> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+    	.enable_all()
+    	.build()?;
+    
+    // Call the asynchronous connect method using the runtime
+    let inner = rt.block_on(crate::client::connect(addr))?;
+    
+    Ok(BlockingClient { inner, rt })
+}
+```
+
+通常在使用 Tokio 时，会使用默认的 multi_thread 运行时，它将产生一堆后台线程，这样它就可以有效地同时运行许多东西。在上述实例中，每次只做一件事，所以不会因为运行多个线程而获得任何好处，这使得 current_thread 运行时成为完美的选择，因为它不会产生任何线程。
+
+`current_thread` 运行时不产生新线程，所以它只在 block_on 被调用时运行。一旦 block_on 返回，所有在该运行时上生成的任务将冻结，直到你再次调用 block_on。如果 spawn 的任务在不调用 block_on 时必须继续运行，要使用 multi_thread 运行时。
+
+`enable_all` 调用启用了 Tokio 运行时的 IO 和定时器驱动。如果它们没有被启动，运行时就无法执行IO或定时器。
+
+
+
+实现 BlockingClient：
+
+```rust
+use bytes::Bytes;
+use std::time::Duration;
+
+impl BlockingClient {
+    pub fn get(&mut self, key: &str) -> crate::Result<Option<Bytes>> {
+        self.rt.block_on(self.inner.get(key))
+    }
+    
+    pub fn set(&self, key: &str, value: Bytes) -> crate::Result<()> {
+        self.rt.block_on(self.inner.set(key, value))
+    }
+    
+    pub fn set_expires(&mut self, key: &str, value: Bytes, expiration: Duration) 
+    	-> crate::Result<()> {
+        self.rt.block_on(self.set_expires(key, value, expiration))
+    }
+    
+    pub fn publish(&mut self, channel: &str, message: Bytes) -> crate::Result<u64> {
+        self.rt.block_on(self.inner.publish(channel, message))
+    }
+}
+```
+
+
+
+Client::subscribe 方法，它将 Client 转化为 Subscriber 对象：
+
+```rust
+/// A client that has entered pub/sub mode
+/// 
+/// Once clients subscribe to a channel, they may only perform
+/// pub/sub related commands. The `BlockingClient` type is
+/// transactioned to a `BlockingSubscriber` type in order to
+/// prevent non-pub/sub methods from being called
+pub struct BlockingSubscriber {
+    /// The asynchronous `Subscriber`
+    inner: crate::client::Subscriber,
+    
+    /// A `current_thread` runtime for executing operations on the
+    /// asynchronous client in a blocking manner
+    rt: Runtime,
+}
+
+impl BlockingClient {
+    pub fn subcribe(self, channels: Vec<String>) -> crate::Result<BlockingSubscriber> {
+        let subscriber = self.rt.block_on(self.inner.subscribe(channels))?;
+        Ok(BlockingSubscriber {
+            inner: subscriber,
+            rt: self.rt,
+        })
+    }
+}
+
+impl BlockingSubscriber {
+    pub fn get_subscribed(&self) -> &[String] {
+        self.inner.get_subscribed()
+    }
+    
+    pub fn next_message(&mut self) -> crate::Result<Option<Message>> {
+        self.rt.block_on(self.inner.next_message())
+    }
+    
+    pub fn subscribe(&mut self, channels: &[String]) -> crate::Result<()> {
+        self.rt.block_on(self.inner.subscribe(channels))
+    }
+    
+    pub fn unsubscribe(&mut self, channels: &[String]) -> crate::Result<()> {
+        self.rt.block_on(self.inner.unsubscribe(channels))
+    }
+}
+```
+
+
+
+## 10.3 其他方法
+
+上面解释了实现同步包装器的最简单方法，但这不是唯一的方法，有这些方法：
+
+- 创建一个 Runtime 并在异步代码上调用 block_on
+- 创建一个 Runtime 并在其上生成事物
+- 在一个单独的线程中运行 Runtime 并向其发送消息
+
+
+
+### 10.3.1 在运行时上生成事物
+
+调用运行时对象的 spawn 方法，创建以一个新的在运行时上运行的后台任务
+
+```rust
+use std::time::Duration;
+use tokio::runtime::Builder;
+
+fn main() {
+    let runtime = Builder::new_current_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let mut handles = Vec::with_capacity(10);
+    for i in 0..10 {
+        handles.push(runtime.spawn(runtime.spawn(my_bg_task(i))));
+    }
+
+    // Do something time-consuming while the background tasks execute
+    std::thread::sleep(Duration::from_millis(750));
+    println!("Finished time-consuming task");
+
+    // Wait for all of them to complete
+    for handle in handles {
+        // The `spawn` method returns a `JoinHandle`. A `JoinHandle` is
+        // a future, so we can wait for it using `block_on`
+        runtime.block_on(handle).unwrap().unwrap();
+    }
+}
+
+async fn my_bg_task(i: u64) {
+    // By subtracting, the tasks with larger values of i sleep
+    // for a shorter duration
+    let millis = 1000 - 50*i;
+    println!("Task {} sleeping for {} ms", i, millis);
+
+    tokio::time::sleep(Duration::from_millis(millis)).await;
+    println!("Task {} done", i);
+}
+```
+
+通过对调用 spawn 返回的 JoinHandle 调用 block_on 来等待生成的任务完成，但这不是唯一的方法，可使用一些替代方法：
+
+- 使用消息传递通道，如 `tokio::sync::mpsc`
+- 修改由 Mutex 等保护的共享值。这对GUI中的进度条来说是一个很好的方法，GUI在每一帧都会读取共享值
+
+spawn 方法在 Handle 类型上也是可用的。Handle 类型可以被克隆，以便在一个运行时中获得许多句柄，每个 Handle 都可以用来在运行时中生成新的任务
+
+
+
+### 10.3.2 发送消息
+
+运行时使用消息传递来通信
+
+```rust
+use tokio::runtime::Builder;
+use tokio::sync::mpsc;
+
+pub struct Task {
+    pub name: String,
+}
+
+async fn handle_task(task: Task) {
+    println!("Got task {}", task.name);
+}
+
+#[derive(Clone)]
+pub struct TaskSpawner {
+    spawn: mpsc::Sender<Task>,
+}
+
+impl TaskSpawner {
+    pub fn new() -> TaskSpawner {
+        // Set up a channel for communicating
+        let (send, mut recv) = mpsc::channel(16);
+
+        // Build the runtime for the new thread
+        let rt = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        std::thread::spawn(move || {
+            rt.block_on(async move {
+                while let Some(task) = recv.recv().await {
+                    tokio::spawn(handle_task(task));
+                }
+
+                // Once all senders have gone out of scope,
+                // the `.recv()` call returns None and it will
+                // exit from the while loop and shut down the thread
+            });
+        });
+
+        TaskSpawner { spawn: send }
+    }
+
+    pub fn spawn(&self, task: Task) {
+        match self.spawn.blocking_send(task) {
+            Ok(()) => {},
+            Err(_) => panic!("The shared runtime has shut down"),
+        }
+    }
+}
+```
 
 
 
 
 
+# 11. IO类型
+
+## 11.1 硬件层面
+
+IO 是一种和外围设备交换数据的方式，包括磁盘读写、网络数据包接收和发送、显示器输出、键盘鼠标输入等
+
+现代操作系统和外围设备的交流取决于外围设备的特定类型及它们的固件版本和硬件能力。随着外围设备越来越高级，它们呢个给同时处理多个并发的读写数据请求，串行交流已被淘汰。在这些场景中，外围设备和CPU间的交流在硬件层面都是异步的。
+
+这个异步机制被称为硬件中断 (hardware interrupt)。CPU请求外围设备读取数据，会进入一个无限循环，每次都会检查外围设备的数据是否可用，直到获得数据为止。这种方法称为轮询(polling)，因为 CPU 需要保持检查外围设备。
+
+在现代硬件中，取而代之发生的是 CPU 请求外围硬件执行操作，然后就忘了这件事，继续处理其他的 CPU 指令。只要外围设备做完了，它会通过电路中断来通知 CPU。这发生在硬件中，CPU不需要停下来或检查这个外围设备，可以继续执行其它规则，直到周边设备说已经做完了
 
 
 
+## 11.2 软件层面
 
-
-
-
-
-
-
-
-
+- **阻塞 Blocking**：发生IO阻塞时，线程休眠，除了等待IO完成，不能干其他事。
+- **非阻塞 Non-Blocking**：发生IO阻塞时，线程不休眠，继续干其他工作，并会检查之前的IO是否已完成
+- **多路复用 Multiplexed**：解决线程重复进行非阻塞IO，状态轮询导致过多消耗CPU的问题。支持将所有需要IO操作写入队列，阻塞在所有的操作上。当其中一个IO完成之后由OS唤醒线程。
+- **异步 Async**：多路复用的问题在于IO准备好供线程处理前，线程仍然在休眠。对许多程序来说，这很好，线程等待IO操作完成的适合没有其他事情可做。但有些时候确实有其他事要做。同时存在数值计算和IO操作时，需要在数值计算完成时被IO中断，IO完成时也需要执行中断。这些操作是通过事件回调完成的。执行读取的调用完成需要一个回调，并立即返回。在IO完成的时候，操作系统会暂停线程，并执行回调，一旦回调执行完毕，它将恢复线程。
 
 
 
