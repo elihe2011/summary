@@ -1,4 +1,60 @@
-# 1. 调用C库
+# 1. 不安全操作
+
+在整个代码库 (code base，指构建一个软件系统所使用的全部代码) 中，要尽可能减少不安全代码的量。
+
+在 Rust 中，不安全代码块用于避开编译器的保护策略。不安全代码块主要用于四件事：
+
+- 解引用裸指针
+- 通过 FFI 调用函数
+- 调用不安全函数
+- 内联汇编 (inline assembly)
+
+
+
+## 1.2 原始指针
+
+原始指针 (raw pointer，裸指针) `*` 和引用 `&T` 有类似的功能，但引用是安全的，因为借用检查器保证了它指向一个有效的数据。解引用一个裸指针只能通过不安全代码块执行
+
+```rust
+fn main() {
+    let raw_p: *const u32 = &10;
+
+    unsafe {
+        assert_eq!(*raw_p, 10);
+    }
+}
+```
+
+
+
+## 1.3 调用不安全函数
+
+一些函数可以声明为不安全的(unsafe)，这意味着在使用它时保证正确性不再是编译器的责任，而是程序员。
+
+不安全函数`std::slice::from_raw_parts` 向它传入指向第一个元素的指针和长度参数，它会创建一个切片。
+
+```rust
+use std::slice;
+
+fn main() {
+    let vector = vec![1, 2, 3, 4];
+
+    let pointer = vector.as_ptr();
+    let length = vector.len();
+
+    unsafe {
+        let my_slice: &[u32] = slice::from_raw_parts(pointer, length);
+
+        assert_eq!(vector.as_slice(), my_slice);
+    }
+}
+```
+
+
+
+# 2. FFI
+
+## 2.1 调用C库
 
 Rust 提供了到 C 语言库的外部语言函数接口 (Foreign Function Interface, FFI)。外部语言函数必须在一个 extern 代码块中，且该代码块要带有一个包含名称的 `#[link]` 属性。
 
@@ -63,7 +119,7 @@ fn main() {
 
 
 
-# 2. 编译成C库
+## 2.2 编译成C库
 
 **Step 1**: Cargo.toml
 
@@ -155,10 +211,6 @@ fibonacci(45) = 1836311903
 
 
 
-
-
-
-
 标准输入读取并转换：
 
 ```rust
@@ -171,9 +223,7 @@ fibonacci(45) = 1836311903
 
 
 
-
-
-# 3. 调用C函数
+## 2.3 调用C函数
 
 ```rust
 use std::fmt;
@@ -221,6 +271,18 @@ fn main() {
     println!("cos({:?}) = {:?}", z, cos(z));
 }
 ```
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
