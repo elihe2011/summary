@@ -10,12 +10,10 @@
 在 Rust 中，不安全代码块用于避开编译器的保护策略。unsafe 的使用场景：
 
 - 解引用裸指针
-- 调用不安全函数
-- 通过 FFI 调用函数
-- 访问或修改一个可变静态变量
-- 实现一个 `unsafe` 特征
-- 访问 `union` 中的字段
-- 内联汇编 (inline assembly)
+- 调用不安全函数或方法 (例如：通过 FFI 调用函数)
+- 访问或修改可变静态变量
+- 实现不安全`unsafe` 特征
+- 访问 `union` 的字段
 
 
 
@@ -33,9 +31,10 @@
 
 裸指针与引用、智能指针的不同：
 
-- 可以绕开借用规则，可以同时拥有一个数据的可变、不可变指针，甚至还能拥有多个可变的指针
-- 并不能指向合法的内存
-- 可以是 null
+- 允许通过同时拥有不可变和可变指针或指向同一个位置的多个可变指针来忽略借用规则
+- 不保证指向有效内存
+- 允许为空 (null)
+
 - 没有实现任何的自动回收 (drop)
 
 裸指针跟C指针很像，使用它需要以牺牲安全性为前提，它具有破坏 Rust 内存安全的潜力，因此它只能在 `unsafe` 代码块中使用。
@@ -151,7 +150,7 @@ fn main() {
 
 ## 3.2 用安全抽象包裹 `unsafe` 代码
 
-需求：将一个数组分成两个切片，且每个切片都要求是可变的
+需求：**将一个数组分成两个切片，且每个切片都要求是可变的**
 
 ```rust
 fn split_at_mut(slice: &mut [i32], mid: usize) -> (&mut [i32], &mut [i32]) {
@@ -220,19 +219,33 @@ fn split_at_mut(slice: &mut [i32], mid: usize) -> (&mut [i32], &mut [i32]) {
 
 
 
-# 4. FFI
+## 3.3 使用 `extern` 函数调用外部代码
+
+有时，Rust 代码可能需要与用另一种语言编写的代码进行交互。为此，Rust 有一个关键字 `extern`，它有助于创建和使用 *外部函数接口 (FFI)*。
 
 `FFI`：Foreign Function Interface，用来与其它语言进行交互，类似 `JNI` (Java Native Interface)
 
 C 语言代码定义在 `extern` 代码块中，而 `extern` 必须使用 `unsafe` 才能进行调用，原因在于其它语言的代码并不会强制执行 Rust 的规则，因此 Rust 无法对这些代码进行检查，最终要靠开发者自己来保证代码的正确性和程序的安全性。
 
-**ABI**：在 `extern "C"` 代码块中，列出想要调用的外部函数签名。其中 `"C"` 定义了外部函数所使用的**应用二进制接口** ABI (Application Binary Interface)。`ABI` 定义了如何在汇编层面来调用该函数。在所有 `ABI` 中，C 语言的是最常见的。
+```rust
+extern "C" {
+    fn abs(input: i32) -> i32;
+}
+
+fn main() {
+    unsafe {
+        println!("Absolute value of -3 according to C: {}", abs(-3));
+    }
+}
+```
+
+在 `extern "C"` 代码块中，列出想要调用的外部函数签名。其中 `"C"` 定义了外部函数所使用的**应用二进制接口** ABI (Application Binary Interface)。`ABI` 定义了如何在汇编层面来调用该函数。在所有 `ABI` 中，C 语言的是最常见的。
 
 外部语言函数必须在一个 extern 代码块中，且该代码块要带有一个包含名称的 `#[link]` 属性。在 Rust 中，通过外部函数接口 FFI 可以直接调用C语言库。
 
 
 
-## 4.1 调用 C 自定义函数
+### 3.3.1 调用 C 自定义函数
 
 Rust 提供了到 C 语言库的外部语言函数接口 (Foreign Function Interface, FFI)。
 
@@ -295,7 +308,7 @@ fn main() {
 
 
 
-## 4.2 编译成 C 库
+### 3.3.2 编译成 C 库
 
 **Step 1**: Cargo.toml
 
@@ -389,7 +402,7 @@ fibonacci(45) = 1836311903
 
 
 
-## 4.3 调用 C 标准库函数
+### 3.3.3 调用 C 标准库函数
 
 调用 C 标准库中的 `abs` 函数：
 
@@ -457,7 +470,56 @@ fn main() {
 
 
 
-# 5. 访问或修改一个可变的静态变量
+## 3.4 从其他语言调用 Rust 函数
+
+在相关函数的 `fn` 关键字之前添加 `extern` 关键字并指定要使用的 ABI。还需要添加 `#[no_mangle]` 注释来告诉 Rust 编译器不要破坏此函数的名称。*破坏* 是指编译器将为函数指定的名称更改为其他名称，该名称包含更多信息，可供编译过程的其他部分使用，但可读性较差。
+
+```rust
+#[no_mangle]
+pub extern "C" fn call_from_c() {
+    println!("Just called a Rust function from C!");
+}
+```
+
+
+
+# 4. 访问或修改一个可变的静态变量
+
+在 Rust 中，全局变量被称为*静态变量*。
+
+```rust
+static HELLO_WORLD: &str = "Hello, world!";
+
+fn main() {
+    println!("name is {HELLO_WORLD}");
+}
+```
+
+
+
+静态变量与常量类似，它只能存储具有 "static" 生命周期的引用，这意味着 Rust 编译器可以计算出生命周期，我们不需要明确注释它。访问不可变的静态变量是安全的。
+
+常量和不可变静态变量之间的一个细微差别是静态变量中的值在内存中有一个固定的地址。使用该值将始终访问相同的数据。另一方面，常量可以在使用时复制其数据。另一个区别是静态变量可以是可变的。访问和修改可变静态变量是不安全的。
+
+```rust
+static mut COUNTER: i32 = 0;
+
+fn add_to_count(inc: i32) {
+    unsafe {
+        COUNTER += inc;
+    }
+}
+
+fn main() {
+    add_to_count(5);
+    
+    unsafe {
+        println!("OUNTER: {COUNTER}");
+    }
+}
+```
+
+
 
 通过 `Box::leak` 将一个变量从内存中泄漏，然后将其变为 `'static` 生命周期
 
@@ -490,27 +552,29 @@ fn main() {
 
 
 
-# 6. 实现 `unsafe` 特征
+# 5. 实现 `unsafe` 特征
 
-`unsafe` 的特征，是因为该特征至少一个方法包含了有编译器无法验证的内容：
+当特征的至少一个方法具有编译器无法验证的不变量时，该特征是不安全的。
 
 ```rust
 unsafe trait Foo {
-    
+    // methods go here
 }
 
 unsafe impl Foo for i32 {
-    
+    // method implementations go here
 }
+
+fn main() {}
 ```
 
-`Send` 特征标记为 `unsafe` 是因为 Rust 无法验证类型是否能在线程间安全地传递，因此就需要通过 `unsafe` 来告诉编译器，它无需操心，剩下的交给自己来处理。
+通过使用 `unsafe impl`，承诺将坚持编译器无法验证的不变量。
 
 
 
-# 7. 访问 union 中的字段
+# 6. 访问 union 中的字段
 
-`union` 主要用于跟 C 代码进行交互，访问 `union` 的字段是不安全的，因为 Rust 无法保证当前存储在 `union` 实例中的数据类型：
+`union` 类似于 `struct`，但一次只能在特定实例中使用一个声明的字段。联合主要用于与 C 代码中的联合交互。访问联合字段是不安全的，因为 Rust 无法保证当前存储在联合实例中的数据的类型。
 
 ```rust
 #[repr(C)]
