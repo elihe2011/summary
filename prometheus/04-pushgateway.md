@@ -1,4 +1,4 @@
-# 1. 简介
+# 1. 概述
 
 ![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/push-gateway.png)
 
@@ -13,33 +13,50 @@
 
 # 2. 部署
 
-```bash
-docker pull prom/pushgateway:v1.4.3
+为了防止 pushgateway 重启或意外挂掉，导致数据丢失，我们可以通过 -persistence.file 和 -persistence.interval 参数将数据持久化下来。
 
-docker run -d --name=pushgateway -p 9091:9091 prom/pushgateway:v1.4.3
+```bash
+mkdir -p /opt/pushgateway/data
+
+docker run -d --name pushgateway \
+    -p 9091:9091 \
+    -e TZ="Asia/Shanghai" \
+    -v /opt/pushgateway/data:/pushgateway \
+    --restart=always prom/pushgateway:v1.9.0 \
+    --persistence.file=/pushgateway/pushgateway_persist_file \
+    --persistence.interval=5m
 ```
 
 
 
-# 3. 集成
+从 PushGateway 中采集数据，在 prometheus.yml 添加如下内容：
 
-修改 prometheus.yml，添加pushgateway
-
-```bash
+```yaml
 scrape_configs:
   ...
-
   - job_name: 'pushgateway'
+    scrape_interval: 10s # 每过10秒拉取一次
     honor_labels: true
     static_configs:
-    - targets: ['192.168.3.107:9091']
+      - targets: ['192.168.3.111:9091']
+```
+
+刷新配置：`curl -X POST http://192.168.3.111:9090/-/reload`
+
+
+
+查看当前主机上容器的运行状态：http://192.168.3.111:9091
+
+
+```bash
+
 ```
 
 
 
-# 4. 数据推送
+# 3. 数据推送
 
-## 4.1 SDK 推送
+## 3.1 SDK
 
 https://prometheus.io/docs/instrumenting/clientlibs/
 
@@ -63,9 +80,17 @@ if __name__ == '__main__':
 
 
 
-## 4.2 API 推送
+## 3.2 API
+
+默认 URL 地址：`http://<ip>:9091/metrics/job/<JOBNAME>{/<LABEL_NAME>/<LABEL_VALUE>} `
+
+
 
 ```bash
+echo "request_error_number 99" | curl --data-binary @- http://localhost:9091/metrics/job/link_job
+
+curl --data-binary @- http://localhost:9091/metrics/job/snmp/instance/$ip
+
 cat <<EOF | curl --data-binary @- http://localhost:9091/metrics/job/pushgateway/instance/10.40.80.1
 # TYPE http_request_total counter
 http_request_total{code="200",path="/pay"} 12

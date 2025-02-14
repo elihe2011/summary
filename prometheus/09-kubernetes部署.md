@@ -1,6 +1,6 @@
 # 1. Prometheus
 
-## 1.1 RBAC
+## 1.1 权限
 
 Prometheus 通过 `kube-apiserver` 获取数据，需要先创建特定RBAC
 
@@ -46,7 +46,14 @@ subjects:
 
 ## 1.2 存储
 
-暂时使用 NFS 做存储介质
+使用 NFS 做存储介质
+
+```bash
+$ mkdir -p /data/nfsshare/prometheus
+$ chmod 777 /data/nfsshare/prometheus
+```
+
+分配存储
 
 ```yaml
 # prometheus-storage.yml
@@ -68,8 +75,8 @@ spec:
   - hard
   - nfsvers=4.2
   nfs:
-    server: 192.168.3.103
-    path: /mnt/nfs_share
+    server: 192.168.3.200
+    path: /data/nfsshare/prometheus
 ---
 kind: PersistentVolumeClaim
 apiVersion: v1
@@ -114,12 +121,12 @@ data:
       static_configs:
       - targets: ['127.0.0.1:9090']
         labels:
-          instance: prometheus   
+          instance: prometheus 
 ```
 
 
 
-## 1.4 部署
+## 1.4 应用
 
 ```yaml
 # prometheus-deploy.yml
@@ -160,7 +167,7 @@ spec:
       serviceAccountName: prometheus
       containers:
       - name: prometheus
-        image: prom/prometheus:v2.26.1
+        image: prom/prometheus:v2.53.2
         ports:
         - name: http
           containerPort: 9090
@@ -173,7 +180,7 @@ spec:
         - "--config.file=/etc/prometheus/prometheus.yml"
         - "--web.enable-lifecycle"
         - "--storage.tsdb.path=/prometheus"
-        - "--storage.tsdb.retention.time=10d"
+        - "--storage.tsdb.retention.time=15d"
         - "--web.console.libraries=/etc/prometheus/console_libraries"
         - "--web.console.templates=/etc/prometheus/consoles"
         resources:
@@ -202,7 +209,7 @@ spec:
         - name: config
           mountPath: /etc/prometheus
       - name: configmap-reload
-        image: jimmidyson/configmap-reload:v0.7.1
+        image: bitnami/configmap-reload:0.13.1
         args:
         - "--volume-dir=/etc/config"
         - "--webhook-url=http://localhost:9090/-/reload"
@@ -228,7 +235,7 @@ spec:
 
 
 
-## 1.5 登录
+## 1.5 页面
 
 访问地址：http://192.168.80.100:30090/
 
@@ -238,7 +245,16 @@ spec:
 
 # 2. Grafana
 
-## 2.1 存储准备
+## 2.1 存储
+
+暂时使用 NFS 做存储介质
+
+```bash
+$ mkdir -p /data/nfsshare/grafana
+$ chmod 777 /data/nfsshare/grafana
+```
+
+
 
 ```yaml
 # grafana-storage.yml
@@ -251,7 +267,7 @@ metadata:
     k8s-app: grafana
 spec:
   capacity:
-    storage: 5Gi
+    storage: 1Gi
   accessModes:
   - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
@@ -260,8 +276,8 @@ spec:
   - hard
   - nfsvers=4.2
   nfs:
-    server: 192.168.3.103
-    path: /mnt/nfs_share
+    server: 192.168.3.200
+    path: /data/nfsshare/grafana
 ---
 kind: PersistentVolumeClaim
 apiVersion: v1
@@ -276,7 +292,7 @@ spec:
   storageClassName: grafana-nfs-storage
   resources:
     requests:
-      storage: 5Gi
+      storage: 1Gi
   selector:
     matchLabels:
       k8s-app: grafana
@@ -284,10 +300,83 @@ spec:
 
 
 
-## 2.2 部署
+## 2.2 应用
 
 ```yaml
 # grafana-deploy.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: kube-system
+  labels:
+    k8s-app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      k8s-app: grafana
+  template:
+    metadata:
+      labels:
+        k8s-app: grafana
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:11.1.4
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+          name: grafana
+        env:
+        #- name: GF_SECURITY_ADMIN_USER
+        #  value: admin
+        #- name: GF_SECURITY_ADMIN_PASSWORD
+        #  value: admin321
+        - name: GF_AUTH_PROXY_ENABLED
+          value: "true"
+        - name: GF_AUTH_ANONYMOUS_ENABLED
+          value: "true"
+        - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+          value: Admin
+        readinessProbe:
+          failureThreshold: 10
+          httpGet:
+            path: /api/health
+            port: 3000
+            scheme: HTTP
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 30
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /api/health
+            port: 3000
+            scheme: HTTP
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: 200m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        volumeMounts:
+        - mountPath: /var/lib/grafana
+          subPath: grafana
+          name: storage
+      securityContext:
+        fsGroup: 472
+        runAsUser: 472
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: grafana 
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -298,101 +387,24 @@ metadata:
 spec:
   type: NodePort
   ports:
-  - name: http
-    port: 3000
-    targetPort: 3000
-    nodePort: 30000
+  - port: 3000
+    targetPort: 3000  
+    nodePort: 30010
   selector:
     k8s-app: grafana
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: grafana
-  namespace: kube-system
-  labels:
-    k8s-app: grafana
-spec:
-  selector:
-    matchLabels:
-      k8s-app: grafana
-  template:
-    metadata:
-      labels:
-        k8s-app: grafana
-    spec:
-      securityContext:
-        runAsNonRoot: false
-        fsGroup: 0
-        supplementalGroups:
-        - 0
-      containers:                
-      - name: grafana
-        image: grafana/grafana:8.3.6
-        ports:
-        - name: http
-          containerPort: 3000
-        env:
-        - name: GF_SECURITY_ADMIN_USER
-          value: "admin"
-        - name: GF_SECURITY_ADMIN_PASSWORD
-          value: "admin"
-        - name: GF_AUTH_ANONYMOUS_ENABLED
-          value: "true"
-        - name: GF_AUTH_ANONYMOUS_ORG_NAME
-          value: ANONYMOUS
-        - name: GF_AUTH_ANONYMOUS_ORG_ROLE
-          value: Viewer
-        - name: GF_SECURITY_ALLOW_EMBEDDING
-          value: "true"
-        resources:
-          limits:
-            cpu: 2
-            memory: 1Gi
-          requests:
-            cpu: 1
-            memory: 512Mi
-        readinessProbe:
-          failureThreshold: 10
-          httpGet:
-            path: /api/health
-            port: 3000
-            scheme: HTTP
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          successThreshold: 1
-          timeoutSeconds: 30
-        livenessProbe:
-          failureThreshold: 10
-          httpGet:
-            path: /api/health
-            port: 3000
-            scheme: HTTP
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          successThreshold: 1
-          timeoutSeconds: 1
-        volumeMounts:
-        - name: data
-          mountPath: /var/lib/grafana
-          subPath: grafana
-      volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: grafana
 ```
 
 
 
 ## 2.3 数据源
 
-http://192.168.80.100:30000    admin/admin
+访问地址：http://192.168.3.200:30010/   admin/admin
 
 **新增数据源：**
 
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/kubernetes/grafana-ds-new.png)
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/grafana-prometheus.png)
 
-**配置数据源**：
+
 
 ```bash
 # 获取数据源 dns 地址
@@ -566,7 +578,7 @@ curl -X POST http://192.168.80.100:30090/-/reload
 
 
 
-## 4.1 RBAC
+## 4.1 前线
 
 KubeStateMetrics 通过 `kube-apiserver` 获取数据，需要先创建特定RBAC
 
@@ -1601,3 +1613,388 @@ spec:
 步骤4：监控信息页面
 
 ![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/grafana-dashboard-blackbox.png)
+
+
+
+# 8. AlertManager
+
+## 8.1 配置
+
+```yaml
+# alertmanager-config.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: kube-system
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['instance']
+      group_wait: 10s
+      group_interval: 30s
+      repeat_interval: 30m
+      receiver: 'webhook'
+    receivers:
+    - name: 'webhook'
+      webhook_configs:
+      - url: 'http://192.168.3.3:8999'
+```
+
+
+
+## 8.2 应用
+
+```yaml
+# alertmanager-deploy.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: kube-system
+  labels:
+    k8s-app: alertmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      k8s-app: alertmanager
+  template:
+    metadata:
+      labels:
+        k8s-app: alertmanager
+    spec:
+      containers:
+      - name: alertmanager
+        image: prom/alertmanager:v0.27.0
+        ports:
+        - name: http
+          containerPort: 9093
+        args:
+        - "--config.file=/etc/alertmanager/alertmanager.yml"
+        - "--storage.path=/alertmanager"
+        resources:
+          limits:
+            cpu: 1
+            memory: 1Gi
+          requests:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9093
+          initialDelaySeconds: 5
+          timeoutSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9093
+          initialDelaySeconds: 30
+          timeoutSeconds: 30
+        volumeMounts:
+        - name: data
+          mountPath: /alertmanager 
+        - name: config
+          mountPath: /etc/alertmanager
+      - name: configmap-reload
+        image: bitnami/configmap-reload:0.13.1
+        args:
+        - "--volume-dir=/etc/config"
+        - "--webhook-url=http://localhost:9093/-/reload"
+        resources:
+          limits:
+            cpu: 100m
+            memory: 100Mi
+          requests:
+            cpu: 10m
+            memory: 10Mi
+        volumeMounts:
+        - name: config
+          mountPath: /etc/config
+          readOnly: true
+      volumes:
+      - name: data
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: alertmanager-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: kube-system
+  labels:
+    k8s-app: alertmanager
+spec:
+  type: NodePort
+  ports:
+  - name: http
+    port: 9093
+    targetPort: 9093
+    nodePort: 30093
+  selector:
+    k8s-app: alertmanager
+```
+
+
+
+## 8.3 验证
+
+访问地址：http://192.168.3.200:30093/
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/alertmanager-ui.png)
+
+
+
+## 8.4 告警配置
+
+添加告警配置：
+
+```yaml
+alerting:
+  alertmanagers:
+  - scheme: http
+    static_configs:
+    - targets: ["alertmanager.kube-system.svc:9093"]
+    
+rule_files:
+- /etc/prometheus/*-rule.yml  
+```
+
+
+
+更新 prometheus 配置：
+
+```yaml
+# prometheus-config.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: kube-system
+data:
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: kube-system
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval:     15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: "kubernetes"
+        
+    scrape_configs:
+    - job_name: prometheus
+      static_configs:
+      - targets: ['127.0.0.1:9090']
+        labels:
+          instance: prometheus
+          
+    - job_name: 'tke'
+      kubernetes_sd_configs:
+      - role: node
+      relabel_configs:
+      - source_labels: [__address__]
+        regex: '(.*):10250'
+        replacement: '${1}:9100'
+        target_label: __address__
+        action: replace
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+          
+    - job_name: 'cvm'
+      static_configs:
+      - targets: ['192.168.3.112:9100']
+
+    - job_name: 'doris'
+      static_configs: 
+      - targets: ['192.168.3.126:8030']
+        labels:
+          group: fe 
+      - targets: ['192.168.3.126:8040']
+        labels:
+          group: be
+
+    alerting:
+      alertmanagers:
+      - scheme: http
+        static_configs:
+        - targets: ["alertmanager.kube-system.svc:9093"]
+        
+    rule_files:
+    - /etc/prometheus/*-rules.yml
+    
+  alert-node-rules.yml: |
+    groups:
+    - name: hostStats
+      rules:
+      - alert: HostDown
+        expr: up {job=~"tke|cvm"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          description: "实例 {{ $labels.instance }} 已宕机"
+          summary:  "实例 {{ $labels.instance }} 已宕机"
+      - alert: HostCpuUsageAlert
+        expr: sum(avg without (cpu)(irate(node_cpu_seconds_total{mode!='idle'}[5m]))) by (instance) > 0.9
+        for: 1m  
+        labels:
+          severity: critical
+        annotations:
+          summary: "实例 {{ $labels.instance }} CPU 使用率过高"
+          description: "实例{{ $labels.instance }} CPU 使用率超过 90% (当前值为: {{ $value }})"
+      - alert: HostMemUsageAlert
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)/node_memory_MemTotal_bytes > 0.9
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "实例 {{ $labels.instance }} 内存使用率过高"
+          description: "实例 {{ $labels.instance }} 内存使用率 90% (当前值为: {{ $value }})"
+      - alert: HostDiskUsageAlert
+        expr: 100 - (node_filesystem_free_bytes{fstype=~"ext3|ext4|xfs"} / node_filesystem_size_bytes{fstype=~"ext3|ext4|xfs"} * 100) > 95
+        for: 5m  
+        labels:
+          severity: critical
+        annotations:
+          summary: "实例 {{ $labels.instance }} 磁盘使用率过高"
+          description: "实例 {{ $labels.instance }} 磁盘使用率超过95% (当前值为: {{ $value }})"
+
+  alert-doris-rules.yml: |
+    groups:
+    - name: dorisBeAlert
+      rules:
+      - alert: BeDown
+        expr: up {group="be", job="doris"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Doris BE {{ $labels.instance }} 宕机"
+          description: "Doris BE {{ $labels.instance }} 宕机"
+      - alert: TcMalloc
+        expr: doris_be_memory_allocated_bytes / 1024 / 1024 / 1024 > 80
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Doris BE {{ $labels.instance }} TcMalloc 占用的虚拟内存的大小过高"
+          description: "Doris BE {{ $labels.instance }} TcMalloc 占用的虚拟内存的大小超过80%，(当前值为: {{ $value }})"
+      - alert: CompactionScore
+        expr: max by(instance, backend, job) (doris_fe_tablet_max_compaction_score) > 80
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Doris BE {{ $labels.instance }} compaction score 超过80%"
+          description: "Doris BE {{ $labels.instance }} compaction score 超过80%，(当前值为: {{ $value }})"
+      - alert: BatchTaskQueue
+        expr: doris_be_add_batch_task_queue_size{group="be"} > 10
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Doris BE {{ $labels.instance }} 接收导入batch的线程池队列大小超过10"
+          description: "Doris BE {{ $labels.instance }} 接收导入batch的线程池队列大小超过10，(当前值为: {{ $value }})"
+      - alert: CompactionTaskNum
+        expr: sum by(instance) (doris_be_disks_compaction_num{group="be",job="doris"}) > 15
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Doris BE {{ $labels.instance }} 目录下的compaction任务总数超过15"
+          description: "Doris BE {{ $labels.instance }} 目录下的compaction任务总数超过15，(当前值为: {{ $value }})"
+      - alert: LoadTaskChannels
+        expr: doris_be_load_channel_count{group="be",job="doris"} > 10
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Doris BE {{ $labels.instance }} 打开导入任务的Channel数超过10个"
+          description: "Doris BE {{ $labels.instance }} 打开导入任务的Channel数超过10个，(当前值为: {{ $value }})"
+      - alert: BeRateOfCacheMoreThan0.8
+        expr: doris_be_cache_usage_ratio > 0.8
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Doris BE {{ $labels.instance }} LRU Cache 的使用率大于80%"
+          description: "Doris BE {{ $labels.instance }} LRU Cache 的使用率大于80%，(当前值为: {{ $value }})"
+      - alert: BeDiskAvailCapacityLessThan1G
+        expr: node_filesystem_free_bytes{mountpoint="/data"} < (1024*1024*1024)
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Doris BE {{ $labels.instance }} 数据目录所在磁盘的剩余空间小于1G"
+          description: "Doris BE {{ $labels.instance }} 数据目录所在磁盘的剩余空间小于1G，(当前值为: {{ $value }})"
+      - alert: BeDiskStatusAbnormal
+        expr: doris_be_disks_state == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Doris BE {{ $labels.instance }} 数据目录的磁盘状态异常"
+          description: "Doris BE {{ $labels.instance }} 数据目录的磁盘状态异常"
+    - name: dorisFeAlert
+      rules:
+      - alert: FeDown
+        expr: up {group="fe", job="doris"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Doris FE {{ $labels.instance }} 宕机"
+          description: "Doris FE {{ $labels.instance }} 宕机"
+      - alert: FeConnectionMoreThan1000
+        expr: doris_fe_connection_total > 1000       
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Doris FE {{ $labels.instance }} MySQL客户端连接数超过1000"
+          description: "Doris FE {{ $labels.instance }} MySQL客户端连接数超过1000，(当前值为: {{ $value }})"
+      - alert: FeQpsMoreThan500
+        expr: rate(doris_fe_query_total[1m])>500 
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Doris FE {{ $labels.instance }} QPS超过500"
+          description: "Doris FE {{ $labels.instance }} QPS超过500，(当前值为: {{ $value }})"
+      - alert: FeRateOfActiveThreadMoreThan0.8
+        expr: (doris_fe_thread_pool_active_threads/doris_fe_thread_pool_size) > 0.8 
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Doris FE {{ $labels.instance }} 线程池使用占用比例超过80%"
+          description: "Doris FE {{ $labels.instance }} 线程池使用占用比例超过80%，(当前值为: {{ $value }})"
+      - alert: FeRateOfJVMUsedMemMoreThan0.8
+        expr: (jvm_memory_heap_used_bytes/jvm_memory_heap_max_bytes) > 0.8
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Doris FE {{ $labels.instance }} JVM内存使用占用比例超过80%"
+          description: "Doris FE {{ $labels.instance }} JVM内存使用占用比例超过80%，(当前值为: {{ $value }})"
+      - alert: FeRateOfNodeAvailableMemLessThan0.2
+        expr: (node_memory_MemAvailable/node_memory_MemTotal)<0.2
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Doris FE {{ $labels.instance }} 可用内存占比少于20%"
+          description: "Doris FE {{ $labels.instance }} 可用内存占比少于20%，(当前值为: {{ $value }})"
+```
+
+
+
