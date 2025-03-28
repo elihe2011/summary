@@ -856,15 +856,225 @@ async fn scheduler() {
 
 
 
+# 5. `task::fs`
+
+`task::fs` 是 `std::fs` 的异步版本，所有函数都返回可以 `.await` 的 `Future`，确保不会阻塞运行时的事件循环。
+
+主要功能：
+
+- 文件操作：`read`、`write`、`open` 等
+- 目录管理：`create_dir`、`remove_dir` 等
+- 元数据查询：`metadata`、`canonicalize` 等
+- 流式操作：通过 `File` 类型支持异步读写
 
 
 
+## 5.1 基本文件操作
+
+读取和写入文件.
+
+```rust
+use tokio::fs;
+
+async fn read_write() -> anyhow::Result<()> {
+    // 写入文件
+    fs::write("example.txt", "Hello, Tokio!").await?;
+    println!("File written");
+
+    // 读取文件
+    let contents = fs::read("example.txt").await?;
+    println!("File contents: {}", String::from_utf8_lossy(&contents));
+
+    // 删除文件
+    fs::remove_file("example.txt").await?;
+    println!("File removed");
+
+    Ok(())
+}
+```
+
+关键点：
+
+- `write` 和 `read` 是 `std::fs::write` 和 `std::fs::read` 的异步版本
+- 返回 `io::Result`，需处理潜在错误
 
 
 
+## 5.2 File 类型
+
+`tokio::fs::File` 是异步文件句柄，支持更细粒度的操作，如流式读写。
+
+```rust
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+async fn file_demo() -> anyhow::Result<()> {
+    // 写文件
+    let mut file = File::create("test.txt").await?;
+    file.write_all(b"Hello from File!").await?;
+    file.flush().await?;
+    drop(file);  // 关闭文件
+
+    // 读文件
+    let mut file = File::open("test.txt").await?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).await?;
+    println!("Read: {}", String::from_utf8_lossy(&buf));
+
+    Ok(())
+}
+```
+
+关键点：
+
+- `File::create` 和 `File::open` 返回异步文件句柄
+- `AsyncWriteExt` 和 `AsyncReadExt` 提供流式操作方法
 
 
 
+## 5.3 目录管理
+
+异步创建、删除和遍历目录。
+
+```rust
+use tokio::fs;
+
+async fn dir_demo() -> anyhow::Result<()> {
+    // 创建目录
+    fs::create_dir("my_dir").await?;
+    println!("Directory created.");
+
+    // 创建子目录 (mkdir -p)
+    fs::create_dir_all("my_dir/sub_dir").await?;
+    println!("Nested directory created.");
+
+    // 写入文件到目录
+    fs::write("my_dir/sub_dir/file.txt", "Nested file").await?;
+
+    // 删除目录及其内容
+    fs::remove_dir_all("my_dir").await?;
+    println!("Directory removed.");
+
+    Ok(())
+}
+```
+
+关键点：
+
+- `create_dir_all` 递归创建目录
+- `remove_dir_all` 递归删除目录（支持删除非空目录）
+
+
+
+## 5.4 文件元数据
+
+`tokio::fs::metadata` 和相关函数用于查询文件或目录的信息
+
+```rust
+use tokio::fs;
+
+async fn metadata_demo() -> anyhow::Result<()> {
+    fs::write("meta.txt", "Test").await?;
+
+    let metadata = fs::metadata("meta.txt").await?;
+    println!("File size: {}", metadata.len());
+    println!("Is file: {}", metadata.is_file());
+
+    let path = fs::canonicalize("meta.txt").await?;
+    println!("Absolute path: {}", path.to_string_lossy());
+
+    fs::remove_file("meta.txt").await?;
+
+    Ok(())
+}
+```
+
+关键点：
+
+- `metadata` 返回 `Metadata` 结构体，包含大小、类型等信息
+- `canonicalize` 返回文件的绝对路径
+
+
+
+## 5.5 流式读写与缓冲
+
+使用 `tokio::io::BufReader` 和 `BufWriter` 优化大文件操作
+
+```rust
+use tokio::fs::{self, File};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+
+async fn buffer() -> anyhow::Result<()> {
+    // 写入大文件
+    let file = File::create("large.txt").await?;
+    let mut writer = BufWriter::new(file);
+    for i in 0..10000 {
+        writer.write_all(format!("Line {}\n", i).as_bytes()).await?;
+    }
+    writer.flush().await?;
+
+    // 逐行读取
+    let file = File::open("large.txt").await?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    while let Some(line) = lines.next_line().await? {
+        println!("Read: {}", line);
+    }
+
+    fs::remove_file("large.txt").await?;
+    Ok(())
+}
+```
+
+关键点：
+
+- `BufReader` 和 `BufWriter` 减少直接 `I/O` 调用，提高效率
+- `lines()` 返回异步行迭代器
+
+
+
+## 5.6 文件监视与动态加载
+
+结合 `tokio::time`，实现简单的文件变化监控
+
+```rust
+use std::time::Duration;
+use tokio::fs;
+use tokio::time::{sleep, Instant};
+
+async fn file_watch() -> anyhow::Result<()> {
+    let file_path = "watch.txt";
+    fs::write(file_path, "Initial content").await?;
+
+    println!("Wrote file {}", file_path);
+    let mut last_modified = fs::metadata(file_path).await?.modified()?;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    loop {
+        sleep(Duration::from_secs(2)).await;
+        let current_modified = fs::metadata(file_path).await?.modified()?;
+
+        if current_modified != last_modified {
+            let contents = fs::read_to_string(file_path).await?;
+            println!("File changed! New content: {}", contents);
+            last_modified = current_modified;
+        }
+
+        if deadline < Instant::now() {
+            break;
+        }
+    }
+
+    Ok(())
+}
+```
+
+关键点：
+
+- 通过 `modified()` 检查文件修改时间
+- 轮询方式简单，可结合 `notify` crate 优化
+- `deadline` 为了测试能尽快退出
 
 
 
