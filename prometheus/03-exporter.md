@@ -417,8 +417,8 @@ sum(rate(container_fs_writes_bytes_total{image!=""}[2m])) without (device)
 ```bash
 # 创建专用用户
 mysql -u root -p
-mysql> CREATE USER 'exporter'@'192.168.3.105' IDENTIFIED BY '123456' WITH MAX_USER_CONNECTIONS 3;
-mysql> GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'exporter'@'192.168.3.105';
+mysql> CREATE USER 'exporter'@'192.168.%' IDENTIFIED BY '123456' WITH MAX_USER_CONNECTIONS 10;
+mysql> GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'exporter'@'192.168.%';
 mysql> FLUSH PRIVILEGES;
 
 # 创建配置文件
@@ -436,7 +436,7 @@ docker run -d --name mysqld-exporter \
     -p 9104:9104 \
     -e TZ="Asia/Shanghai" \
     -v /opt/mysqld-exporter/my.cnf:/.my.cnf \
-    --restart=always prom/mysqld-exporter:v0.15.1
+    --restart=always prom/mysqld-exporter:v0.17.2
 ```
 
 
@@ -472,6 +472,15 @@ curl -X PUT -d '{"name": "mysql-exporter", "address": "192.168.3.105","port": 91
   - job_name: 'mysqld-exporter'
     static_configs:
       - targets: ['192.168.3.111:9104']
+    relabel_configs:
+      - source_labels: [ "__address__" ]
+        regex: "(.*):(.*)"
+        target_label: "instance"
+        replacement: $1 
+    metric_relabel_configs:
+      - source_labels: [ __name__ ]
+        regex:  "go_.*"
+        action: drop
 ```
 
 
@@ -799,6 +808,41 @@ scrape_configs:
 
 
 # 7. Redis Exporter
+
+## 7.1 部署
+
+```bash
+# 启动容器
+docker run -d --name redis-exporter \
+    -p 9121:9121 \
+    -e TZ="Asia/Shanghai" \
+    --restart=always oliver006/redis_exporter:v1.70.0 \
+    -redis.addr "redis://192.168.3.113:6379" \
+    -redis.password "123456"
+```
+
+修改 prometheus 配置：
+
+```bash
+vi prometheus.yml
+...
+
+- job_name: 'redis-exporter'
+  static_configs:
+    - targets:
+      - 192.168.3.111:9121
+  relabel_configs:
+    - source_labels: [ "__address__" ]
+      regex: "(.*):(.*)"
+      target_label: "instance"
+      replacement: $1 
+  metric_relabel_configs:
+    - source_labels: [ __name__ ]
+      regex:  "go_.*"
+      action: drop
+```
+
+
 
 
 
