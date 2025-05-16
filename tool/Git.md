@@ -777,10 +777,34 @@ git push origin -d dev-xxx # 删除远程分支
 
 # 9. 其它
 
-## 9.1 导出版本库
+## 9.1 归档
 
 ```bash
 git archive --format=zip HEAD > `date +%s`.zip
+```
+
+
+
+## 9.2 查询代码最后修改人
+
+```bash
+git blame xxx
+```
+
+
+
+## 9.3 分支关系图
+
+```bash
+git show-branch
+```
+
+
+
+## 9.4 拆分或合并仓库
+
+```bash
+git subtree
 ```
 
 
