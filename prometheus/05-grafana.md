@@ -175,7 +175,7 @@ Stat Panel 侧重展示系统的当前状态而非变化趋势，适合如下场
 
 
 
-编辑json文件：
+编辑json文件，增加 Prometheus 数据源：
 
 ```json
 {
@@ -183,7 +183,7 @@ Stat Panel 侧重展示系统的当前状态而非变化趋势，适合如下场
   "__inputs": [
     {
       "name": "DS_PROMETHEUS",
-      "label": "Doris",
+      "label": "Prometheus",
       "description": "",
       "type": "datasource",
       "pluginId": "prometheus",
@@ -204,5 +204,30 @@ Stat Panel 侧重展示系统的当前状态而非变化趋势，适合如下场
 
 
 
+编辑json文件，增加 Loki 数据源：
 
+```json
+{
+  // 新增 __inputs，配置变量
+  "__inputs": [
+    {
+      "name": "DS_LOKI",
+      "label": "Loki",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "loki",
+      "pluginName": "Loki"
+    }
+  ],
+  "__elements": [],
+  "__requires": [],
+  ...
+    
+  // 修改数据源为变量    
+  "datasource": {
+     "type": "loki",
+     "uid": "eejyu5zeqtedcf"   // 改为 "${DS_LOKI}"
+   },
+    
+```
 

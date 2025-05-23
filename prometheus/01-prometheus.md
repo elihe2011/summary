@@ -1620,3 +1620,76 @@ remote_read:
 **`min_backoff`**：定义最短的重试等待时间。即在失败后，Prometheus 至少要等待这么长时间才会进行下一次重试。
 
 **`max_backoff`**：定义最长的重试等待时间。如果在重试过程中退避时间逐渐增加，达到 `max_backoff` 后，不会再进一步增加，保持在这个最大等待时间。
+
+
+
+# 9. TSDB Admin API
+
+Prometheus TSDB Admin API提供了三个接口，分别是`快照(Snapshot)`， `数据删除(Delete Series)`，`数据清理(Clean Tombstones)`
+
+默认是关闭的，需要加入启动参数`--web.enable-admin-api`才会启动
+
+## 9.1 创建快照
+
+在 TSDB 数据目录下创建文件 `snapshots/<datetime>-<rand>`
+
+```
+POST /api/v1/admin/tsdb/snapshot
+PUT /api/v1/admin/tsdb/snapshot
+```
+
+URL参数：
+
+- `skip_head=<bool>`: Skip data present in the head block. Optional.
+
+示例：
+
+```bash
+curl -X POST http://localhost:9090/api/v1/admin/tsdb/snapshot
+
+# 快照查询
+ls -l /opt/monitoring/prometheus/data/snapshots/
+drwxr-xr-x 27 nobody nogroup 4096 May 23 15:18 20250523T071823Z-7bbda610ffb7bc2b
+```
+
+
+
+## 9.2 删除指标
+
+```
+POST /api/v1/admin/tsdb/delete_series
+PUT /api/v1/admin/tsdb/delete_series
+```
+
+URL参数：
+
+- `match[]=<series_selector>`: Repeated label matcher argument that selects the series to delete. At least one `match[]` argument must be provided.
+- `start=<rfc3339 | unix_timestamp>`: Start timestamp. Optional and defaults to minimum possible time.
+- `end=<rfc3339 | unix_timestamp>`: End timestamp. Optional and defaults to maximum possible time.
+
+示例：
+
+```bash
+curl -v -X PUT -g 'http://localhost:9090/api/v1/admin/tsdb/delete_series?match[]=ssCpuUser{group="cvm"}'
+```
+
+
+
+## 9.3 磁盘清理
+
+使用数据删除接口将 metric 数据删除后，只是将数据标记为删除，实际的数据 (tombstones) 仍然存在于磁盘上，其在将来的某一时刻会被Prometheus清除释放空间，也可以通过数据清理接口显式地清除。
+
+```bash
+PUT /api/v1/admin/tsdb/clean_tombstones
+```
+
+示例：
+
+```bash
+curl -X PUT http://localhost:9090/api/v1/admin/tsdb/clean_tombstones
+```
+
+
+
+
+
