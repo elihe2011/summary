@@ -161,7 +161,7 @@ docker run -d --name prometheus \
 
 
 
-## 2.4 配置文件
+## 2.2 配置文件
 
 ```yaml
 global:
@@ -224,39 +224,61 @@ scrape_configs:
 
 
 
-### 2.4.1 relabel_config
+## 2.3 标签处理
 
-通过 `relabel_configs` 来对 Target 标签进行重新标记(relabel) 。 常用于实现两个功能:
+标签过滤和处理的阶段：
 
-- 将来自服务发现的元数据标签中的信息附加到指标的标签上； 
-- 过滤目标，可以针对标签的某个值进行过滤(处理问题一将使用这个功能)
+- **目标选择**：在 `scrape_configs` 工作的 `relabel_configs` 部分，允许使用 `relabel_config` 对象来选择目标，以刮取和重新标注由任何服务发展机制创建的元数据。
+- **指标选择**：在 `scrape_configs` 工作的 `metric_relabel_configs` 部分，允许使用 `relabel_config` 对象来选择应该被写入 Prometheus 存储的标签和系列。
+- **远程写入**：在 `remote_write` 配置的 `write_relabel_configs` 部分，允许使用 `relabel_config` 来控制 Prometheus 运送到远程存储的标签和系列。
 
 ```yaml
-# 源标签
-[ source_labels: '[' <labelname> [, ...] ']' ]
+global:
+. . .
+rule_files:
+. . .
+scrape_configs:
 
-# 源标签分隔符
-[ separator: <string> | default = ; ]
+- job_name: sample_job_1
+  kubernetes_sd_configs:
+  - . . .
+  relabel_configs:
+  - source_labels: [. . .]
+     . . .
+  - source_labels: [. . .]
+    . . .
+  metric_relabel_configs:
+  - source_labels: [. . .]
+    . . .
+  - source_labels: [. . .]
+    . . .
 
-# 要替换的目标标签
-[ target_label: <labelname> ]
+- job_name: sample_job_2
+  static_configs:
+  - targets: [. . .]
+  metric_relabel_configs:
+  - source_labels: [. . .]
+    . . .
 
-# 正则表达式，用于匹配源标签的值
-[ regex: <regex> | default = (.*) ]
+. . .
 
-# 源标签值取hash的模块
-[ modulus: <uint64> ]
-
-# 当正则表达式匹配时，用于替换的值，$1代替正则匹配到的值
-[ replacement: <string> | default = $1 ]
-
-# 基于正则匹配的动作
-[ action: <relabel_action> | default = replace ]
+remote_write:
+- url: . . .
+  write_relabel_configs:
+  - source_labels: [. . .]
+    . . .
+  - source_labels: [. . .]
+    . . .
 ```
 
 
 
-配置示例：
+### 2.3.1 relabel_config
+
+通过 `relabel_configs` 来对 Target 标签进行重新标记(relabel) 。 常用于实现两个功能:
+
+- 将来自服务发现的元数据标签中的信息附加到指标的标签上
+- 过滤目标，可以针对标签的某个值进行过滤(处理问题一将使用这个功能)
 
 ```yaml
 scrape_configs:
@@ -272,15 +294,15 @@ scrape_configs:
       target_label: idc                       # 新标签的名称
 ```
 
-action 动作选项：
+action 选项：
 
-- replace: 根据 regex 的配置匹配 `source_labels` 标签的值，并且将匹配到的值写入到 `target_label` 当中，如果有多个匹配组，则可以使用 `${1}`, `${2}` 确定写入的内容。如果没匹配到任何内容则不对 `target_label` 进行重写， 默认为 `replace`。如果有replacement，则使用replacement替换目标标签
-- keep: 丢弃 `source_labels` 的值中没有匹配到 `regex` 正则表达式内容的 Target 实例
-- drop: 丢弃 `source_labels` 的值中匹配到 `regex` 正则表达式内容的 Target 实例
-- hashmod: 将 `target_label` 设置为关联的 `source_label` 的哈希模块
-- labelmap: 根据 `regex` 去匹配 Target 实例所有标签的名称（注意是名称），并且将捕获到的内容作为为新的标签名称，`regex` 匹配到标签的的值作为新标签的值
-- labeldrop: 将 `regex` 对所有的标签名进行匹配判定，能够匹配到的标签将从该 Target 的标签集中删除;
-- labelkeep: 将 `regex` 对所有的标签名进行匹配判定，不能匹配到的标签将从该 Target 的标签集中删除;
+- `replace`：根据 regex 的配置匹配 `source_labels` 标签的值，并且将匹配到的值写入到 `target_label` 当中，如果有多个匹配组，则可以使用 `${1}`, `${2}` 确定写入的内容。如果没匹配到任何内容则不对 `target_label` 进行重写， 默认为 `replace`。如果有replacement，则使用replacement替换目标标签
+- `keep`：保留 `source_labels` 的值匹配到 `regex` 的目标(targets)或系列(series)，丢弃不匹配的
+- `drop`：丢弃 `source_labels` 的值匹配到 `regex` 的目标(targets)或系列(series)，保留不匹配的
+- `hashmod`：将 `target_label` 设置为关联的 `source_label` 的哈希模块
+- `labelmap`：根据 `regex` 去匹配目标(targets)所有标签的名称 (注意是名称)，并且将捕获到的内容作为为新的标签名称，`regex` 匹配到标签的的值作为新标签的值
+- `labeldrop`：将 `regex` 与所有标签名称匹配，**删除所有匹配的标签** (忽略 `source_labels`，适用于所有标签名称)
+- `labelkeep`：将 `regex` 与所有标签名称匹配，**删除所有不匹配的标签** (忽略 `source_labels`，适用于所有标签名称)
 
 
 
@@ -288,157 +310,462 @@ action 动作选项：
 
 
 
-**测试Job**：该Job包含两个实例，实例分别包含了两个标签，`__machine_hostname__`和`__machine_idc__`
+#### 2.3.1.1 replace
 
 ```yaml
-scrape_configs:
-  - job_name: 'myjob'
-    static_configs:
-    - targets: 
-      - '10.12.61.1:9100'
-      labels: 
-        __machine_hostname__: 'node-01'
-        __machine_idc__: 'idc-01'
-    - targets: 
-      - '10.12.61.2:9100'
-      labels: 
-        __machine_hostname__: 'node-02'
-        __machine_idc__: 'idc-02'
+relabel_configs:
+  - action: replace
+    source_labels: [<labelname>, ...]
+    target_label: <labelname>
+    regex: <regex>  # 可选，默认为'(.*)'
+    replacement: <string>  # 可选，默认为'$1'
 ```
 
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/relabel-1.png)
+核心功能：
+
+- **创建新标签**：当 `target_label` 不存在时，会创建新标签
+- **修改现有标签**：当 `target_label` 已存在时，会覆盖其值
+- **值转换**：通过 `regex` 和 `replacement` 实现复杂的值转换
 
 
 
-**replace**：将`__machine_hostname__`的值替换到新标签hostname
+注意事项：
+
+- replace 是默认操作
+- 当 regex 不匹配时，不会执行替换
+- `replacement` 中可以使用 `$1`, `$2` 等引用捕获组
+- 多个 `replace` 规则按顺序执行
+
+
+
+使用场景：
+
+- 简单标签替换
 
 ```yaml
-scrape_configs:
-  - job_name: 'myjob'
-    static_configs:
-    - targets: 
-      - '10.12.61.1:9100'
-      labels: 
-        __machine_hostname__: 'node-01'
-        __machine_idc__: 'idc-01'
-    - targets: 
-      - '10.12.61.2:9100'
-      labels: 
-        __machine_hostname__: 'node-02'
-        __machine_idc__: 'idc-02'
-    relabel_configs:
-    - source_labels: [__machine_hostname__]
-      regex: "(.*)"
-      target_label: "hostname"
-      action: replace
-      replacement: '$1'
+relabel_configs:
+  - action: replace
+    source_labels: [__address__]
+    target_label: instance
 ```
 
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/relabel-2.png)
+用途：将 `__address__` 的值复制到 `instance` 标签
 
 
 
-**keep**：排除标签值不匹配正则的targets 目标，此处正则匹配`__machine_hostname__`: 'node-01' ，只保留了匹配的实例
+- 使用正则表达式提取部分值
 
 ```yaml
-scrape_configs:
-  - job_name: 'myjob'
-    static_configs:
-    - targets: 
-      - '10.12.61.1:9100'
-      labels: 
-        __machine_hostname__: 'node-01'
-        __machine_idc__: 'idc-01'
-    - targets: 
-      - '10.12.61.2:9100'
-      labels: 
-        __machine_hostname__: 'node-02'
-        __machine_idc__: 'idc-02'
-    relabel_configs:
-    - source_labels: [__machine_hostname__]
-      regex: "(.*)-01"
-      target_label: "hostname"
-      action: keep
-      replacement: '$1'
+relabel_configs:
+  - action: replace
+    source_labels: [__meta_kubernetes_pod_name]
+    target_label: pod_name
+    regex: '(.+)-[a-z0-9]{5}-[a-z0-9]{5}'
+    replacement: '$1'
 ```
 
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/relabel-3.png)
+用途：从 Kubernetes Pod 名称中提取主名称部分 (去掉随机后缀)
 
 
 
-**labelmap**：重写新的标签hostname和idc，使用原有`__machine_hostname__`和`__machine_idc__`标签的值
+- 多标签组合
 
 ```yaml
-scrape_configs:
-  - job_name: 'myjob'
-    static_configs:
-    - targets: 
-      -  '10.12.61.1:9100'
-      labels: 
-        __machine_hostname__: 'node-01'
-        __machine_idc__: 'idc-01'
-    - targets: 
-      -  '10.12.61.2:9100'
-      labels: 
-        __machine_hostname__: 'node-02'
-        __machine_idc__: 'idc-02'
-    relabel_configs:
-      - action: labelmap
-        regex: __machine_(.+)__
+relabel_configs:
+  - action: replace
+    source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_name]
+    separator: '/'
+    target_label: k8s_pod
 ```
 
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/relabel-4.png)
+用途：将命名空间和 Pod 名称组合成一个新标签，格式为 `namespace/podname`
 
 
 
-**drop**：丢弃不匹配的 target
-
-consul 服务注册：
+- 值重写：
 
 ```yaml
-- job_name: 'node-exporter'
-  consul_sd_configs:
-   - server: "192.168.28.10:8500"
-   - server: "192.168.28.11:8500"
-   - server: "192.168.28.12:8500"
-     datacenter: 'dc1'
-     services: []
-  relabel_configs:
-   - source_labels: [__meta_consul_service]
-     regex: ".*node-exporter.*"
-     action: keep
-   - source_labels: [__scheme__, __address__, __metrics_path__]
-     regex: "(http|https)(.*)"    # 两个分组
-     separator: ""
-     target_label: "endpoint"
-     replacement: "${1}://${2}"   # 引用两个分组
-     action: replace
+relabel_configs:
+  - action: replace
+    source_labels: [status]
+    regex: '^5..$'
+    replacement: 'server_error'
+    target_label: status_class
+```
+
+用途：将 5xx 状态码统一转换为 "server_error"
+
+
+
+- 条件替换：
+
+```yaml
+relabel_configs:
+  - action: replace
+    source_labels: [__meta_kubernetes_pod_annotation_monitoring_group]
+    regex: '(.+)'
+    target_label: group
+    replacement: '$1'
+  - action: replace
+    source_labels: [__meta_kubernetes_namespace]
+    target_label: group
+    regex: '(.+)'
+    replacement: '$1'
+    # 只有当前面的替换没发生时才会执行
+    # (即没有 monitoring_group 注解时使用命名空间作为 group)
 ```
 
 
 
-丢弃服务：
+- 与其它操作组合
 
 ```yaml
-scrape_configs:
-  - job_name: 'prometheus'
-    consul_sd_configs:
-     - server: "192.168.28.10:8500"
-     - server: "192.168.28.11:8500"
-     - server: "192.168.28.12:8500"
-       datacenter: 'dc1'
-       services: []
-    relabel_configs:
-     - source_labels: [__meta_consul_service]
-       regex: "consul"
-       action: drop
+relabel_configs:
+  - action: replace
+    source_labels: [__address__]
+    regex: '([^:]+)(?::\d+)?'
+    replacement: '${1}:9090'
+    target_label: __address__
+  - action: labelmap
+    regex: __meta_kubernetes_node_label_(.+)
 ```
 
 
 
-### 2.4.2 metric_relabel_configs
+#### 2.3.1.2 keep
 
-`metric_relabel_configs` 重标记指标标签的用途：
+用于**选择性保留**符合特定条件的 metrics，丢弃所有其他不匹配的
+
+```yaml
+relabel_configs:
+  - action: keep
+    source_labels: [<labelname>, ...]
+    regex: <regex>  # 必须指定
+    [ separator: <string> ]  # 可选，默认为';'
+```
+
+核心功能：
+
+- **过滤指标**：只保留匹配指定正则表达式的指标
+- **条件判断**：基于一个或多个标签的值进行过滤
+- **前置过滤**：通常在抓取前应用，减少不必要的数据收集
+
+
+
+注意事项：
+
+- keep 是白名单机制，只有匹配的指标会被保留；而 drop是黑名单机制
+- 多个 keep 规则是 AND 关系，必须同时满足才会被保留
+
+
+
+| 特性     | keep                 | drop                 |
+| -------- | -------------------- | -------------------- |
+| 逻辑     | 白名单（保留匹配的） | 黑名单（丢弃匹配的） |
+| 性能影响 | 通常更好（早期过滤） | 可能需要处理更多指标 |
+| 使用场景 | 明确知道需要保留什么 | 明确知道需要排除什么 |
+| 默认行为 | 不匹配=丢弃          | 不匹配=保留          |
+
+
+
+使用场景：
+
+- 保留规则
+
+```yaml
+relabel_configs:
+  - action: keep
+    source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+    regex: "true"
+```
+
+用途：只保留带有 `prometheus.io/scrape=true` 注释的 Kubernetes Pod 指标
+
+
+
+- 多标签条件判断
+
+```yaml
+relabel_configs:
+  - action: keep
+    source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_annotation_monitoring]
+    regex: "(production|staging);enabled"
+    separator: ";"  # 明确指定分隔符
+```
+
+用途：只保留命名空间为 "production" 或 "staging"，且带有 `monitoring=enabled` 注释的 Pod
+
+
+
+- 基于服务发现元数据过滤
+
+```yaml
+relabel_configs:
+  - action: keep
+    source_labels: [__meta_consul_service]
+    regex: "(nginx|postgres|redis).*"
+```
+
+用途：只保留 Consul 服务发现中服务名以 nginx、postgres 或 redis 开头的服务
+
+
+
+- 与 `replace` 组合
+
+```yaml
+relabel_configs:
+  - action: keep
+    source_labels: [__meta_kubernetes_pod_label_app]
+    regex: "critical-app"
+  - action: replace
+    source_labels: [__meta_kubernetes_pod_name]
+    target_label: pod_name
+```
+
+用途：先保留标签为 `app=critical` 的Pod，然后对这些 Pod 的指标添加 pod_name 标签
+
+
+
+- 反向保留（通过否定正则）
+
+```yaml
+relabel_configs:
+  - action: keep
+    source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+    regex: "(?!false).*"  # 保留所有值不为"false"的
+```
+
+
+
+- 复杂条件组合
+
+```yaml
+relabel_configs:
+  - action: keep
+    source_labels: [
+        __meta_kubernetes_namespace,
+        __meta_kubernetes_pod_label_tier,
+        __meta_kubernetes_pod_annotation_monitoring
+    ]
+    regex: "production;frontend|backend;enabled"
+    separator: ";"
+```
+
+
+
+#### 2.3.1.3 labeldrop
+
+用于删除特定标签，不会删除整个 metrics，只是移除特定标签
+
+```yaml
+relabel_configs:
+  - action: labeldrop
+    regex: <regular_expression>  # 必须指定
+```
+
+
+
+核心功能：
+
+- **标签删除**：删除匹配正则表达式的标签
+- **不影响指标**：时间序列本身会被保留
+- **元数据清理**：常用于删除不必要的或敏感的标签
+
+
+
+注意事项：
+
+- 执行顺序：`labeldrop` 通常在 `labelmap` 或 `replace` 之后执行
+- 不可逆操作：被删除的标签无法在后续处理中被恢复
+- 性能影响：删除多余标签可以减少存储空间和提高查询效率
+- 正则表达式：使用精确的正则以避免意外删除需要的标签
+
+
+
+使用场景：
+
+- 删除临时或调试标签
+
+```yaml
+relabel_configs:
+  - action: labeldrop
+    regex: "temp_.*"  # 删除所有以temp_开头的标签
+```
+
+
+
+- 清理 Kuberenetes 元数据标签
+
+```yaml
+relabel_configs:
+  - action: labeldrop
+    regex: "__meta_kubernetes_pod_label_(.+)"  # 删除K8s自动生成的pod标签
+```
+
+
+
+- 删除敏感信息
+
+```yaml
+relabel_configs:
+  - action: labeldrop
+    regex: "(password|token|key)"  # 删除可能包含敏感信息的标签
+```
+
+
+
+- 保留特定标签 (反向操作)
+
+```yaml
+relabel_configs:
+  - action: labelkeep
+    regex: "(instance|job|env)"  # 只保留这些标签，删除其他所有标签
+```
+
+
+
+- 多节点标签清理
+
+```yaml
+relabel_configs:
+  - action: labeldrop
+    regex: "__meta_kubernetes_.*"  # 先删除所有K8s元数据标签
+  - action: labeldrop
+    regex: "tmp_.*"  # 再删除临时标签
+```
+
+
+
+- 与服务发现结合
+
+```yaml
+relabel_configs:
+  - action: labelmap
+    regex: __meta_kubernetes_node_label_(.+)  # 先映射节点标签
+  - action: labeldrop
+    regex: "__meta_kubernetes_.*"  # 然后删除原始元数据标签
+```
+
+
+
+#### 2.3.1.4 labelmap
+
+用于批量重命名标签，适合处理服务发现系统生成的大量元数据标签
+
+```yaml
+relabel_configs:
+  - action: labelmap
+    regex: <regular_expression>  # 必须指定
+    replacement: <string>       # 可选，默认为 '$1'
+```
+
+
+
+核心功能：
+
+- **批量标签重命名**：基于正则表达式匹配和重命名多个标签
+- **元数据标签转换**：常用于将服务发现系统的元数据标签转为标准标签
+- **模式匹配**：使用有正则捕获组提取签名部分
+
+
+
+注意事项：
+
+- 执行顺序：通常在其他操作 (replace， keep等) 之前执行
+
+- 非破坏性：原始标签会保留，除非显示使用 `labeldrop` 删除
+- 冲突解决：当新标签名已存在时会被覆盖
+
+
+
+使用场景：
+
+- Kubernetes 元数据标签转换
+
+```yaml
+relabel_configs:
+  - action: labelmap
+    regex: __meta_kubernetes_pod_label_(.+)  # 将K8s Pod标签转为普通标签
+```
+
+转换结果：
+
+- `__meta_kubernetes_pod_label_app` → `app`
+- `__meta_kubernetes_pod_label_version` → `version`
+
+
+
+- Consul 服务标签处理
+
+```yaml
+relabel_configs:
+  - action: labelmap
+    regex: __meta_consul_service_metadata_(.+)
+```
+
+
+
+- 添加前缀/修改命名空间
+
+```yaml
+relabel_configs:
+  - action: labelmap
+    regex: (.+)
+    replacement: k8s_$1  # 给所有标签添加k8s_前缀
+```
+
+
+
+- 选择性重命名
+
+```yaml
+relabel_configs:
+  - action: labelmap
+    regex: __meta_kubernetes_node_label_(region|zone)  # 只转换region和zone标签
+```
+
+
+
+- 多阶段处理
+
+```yaml
+relabel_configs:
+  - action: labelmap
+    regex: __meta_kubernetes_pod_label_(.+)
+  - action: labeldrop
+    regex: "__meta_kubernetes_.+"  # 转换后删除原始元数据标签
+```
+
+
+
+- 复杂替换模式
+
+```yaml
+relabel_configs:
+  - action: labelmap
+    regex: __meta_([^_]+)_(.+)
+    replacement: ${1}_${2}  # 将__meta_xxx_yyy转为xxx_yyy
+```
+
+
+
+#### 2.3.1.3 总结
+
+|操作|作用对象|结果|常用场景                         |
+|---|-----|---|---|
+|`keep`|整个时间序列|保留匹配的指标|保留需要的指标 |
+|`drop`|整个时间序列|丢弃匹配的指标|丢弃不需要的指标 |
+|`labelkeep`|标签|只保留匹配的标签|严格限制标签集        |
+|`labeldrop`|标签|删除匹配的标签|清理元数据、敏感信息     |
+|`labelmap`|标签|批量标签重命名|基于模式匹配的标签名转换 |
+|`replace`|标签值|修改或创建标签值|标签值转换、标准化     |
+
+
+
+
+### 2.3.2 metric_relabel_configs
+
+`metric_relabel_configs` 是 Prometheus 在保存数据前的最后一步标签重新编辑，其用途如下：
 
 - 删除不必要的指标
 - 从指标中删除敏感或不需要的标签
@@ -446,60 +773,113 @@ scrape_configs:
 
 
 
-**1. 删除不需要的指标：**通过指标的元标签 `__name__` 引用指标名称，而后由 regex 进行匹配判定，再使用 drop action 删除匹配的指标
+与 `relabel_configs` 的区别：
+
+| 特性     | relabel_configs        | metric_relabel_configs |
+| -------- | ---------------------- | ---------------------- |
+| 执行阶段 | 服务发现后，抓取前     | 抓取后，存储前         |
+| 主要用途 | 控制抓取目标           | 控制存储内容           |
+| 可见数据 | 只能看到服务发现元数据 | 能看到完整的指标和标签 |
+| 性能影响 | 影响目标选择           | 影响存储内容           |
+
+
 
 ```yaml
 scrape_configs:
-  - job_name: 'consul-node-exporter'
-    consul_sd_configs:
-      - server: "192.168.28.10:8500"
-      - server: "192.168.28.11:8500"
-      - server: "192.168.28.12:8500"
-        datacenter: 'dc1'
-        services: []
-    relabel_configs:
-      - source_labels: [__meta_consul_tags]
-        regex: ".*node-exporter.*"
-        action: keep
+  - job_name: 'my_job'
     metric_relabel_configs:
-      - source_labels: [ __name__ ]
-        regex:  "go_info"
-        action: drop
+      - action: <action_type>
+        source_labels: [<labelname>, ...]
+        target_label: <labelname>
+        regex: <regex>  # 默认'(.*)'
+        replacement: <string>  # 默认'$1'
 ```
 
 
 
-**2. 修改指标中的标签**：将 label 的名称进行重写，以保证相同含义的 label 有相同的名称
+使用场景：
+
+- 过滤不需要的指标
 
 ```yaml
 metric_relabel_configs:
-- source_labels: [pod]
-  separator: ;
-  regex: (.+)
-  target_label: pod_name
-  replacement: $1
-  action: replace
-- source_labels: [container]
-  separator: ;
-  regex: (.+)
-  target_label: container_name
-  replacement: $1
-  action: replace
+  - action: drop
+    source_labels: [__name__]
+    regex: 'go_memstats_.*'  # 丢弃所有go_memstats开头的指标
 ```
 
 
 
-**3. 删除标签**：
+- 删除敏感标签
 
 ```yaml
 metric_relabel_configs:
-- regex: 'kernelVersion'
-  action: labeldrop
+  - action: labeldrop
+    regex: 'password|token|key'  # 删除敏感标签
 ```
 
 
 
-## 2.5 配置更新
+- 指标重命名
+
+```yaml
+metric_relabel_configs:
+  - source_labels: [__name__]
+    regex: 'external_(.*)'
+    target_label: __name__
+    replacement: 'prefix_$1'  # external_metric → prefix_metric
+```
+
+
+
+- 基于标签值过滤
+
+```yaml
+metric_relabel_configs:
+  - action: keep
+    source_labels: [env]
+    regex: 'production|staging'  # 只保留生产环境和预发环境的指标
+```
+
+
+
+- 动态标签生成
+
+```yaml
+metric_relabel_configs:
+  - source_labels: [path]
+    regex: '/api/(v\d+)/.*'
+    target_label: api_version
+    replacement: '$1'
+```
+
+
+
+- 指标聚合准备
+
+```yaml
+metric_relabel_configs:
+  - source_labels: [instance]
+    regex: '([^:]+):\d+'
+    target_label: host
+    replacement: '$1'  # 从instance中提取主机名
+```
+
+
+
+- 跨标签计算
+
+```yaml
+metric_relabel_configs:
+  - source_labels: [request_size, response_size]
+    regex: '(.+);(.+)'
+    target_label: total_size
+    replacement: '${1}${2}'  # 合并两个大小值
+```
+
+
+
+## 2.4 配置更新
 
 两种配置更新方法：
 
