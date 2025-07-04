@@ -340,6 +340,44 @@ git clean -df
 
 
 
+## 4.4 大小写
+
+已被提交的文件，直接修改文件名大小写，不会触发变更
+
+**方法一**：git mv 文件重命名
+
+```bash
+# 文件
+git mv test.txt TEST.txt
+
+# 目录，不能直接修改，按下面迂回修改
+git mv test-dir tmp
+git mv tmp TEST-DIR
+
+# 提交和推送
+git commit -m "注释"
+git push
+```
+
+
+
+**方法二**：关闭大小写敏感配置 （不推荐）
+
+```bash
+# 关闭大小写敏感配置
+git config core.ignorecase false
+
+# 删除缓存区文件
+git rm -r --cached test.txt
+git rm -r --cached test-dir
+ 
+# 提交和推送
+git commit -m "注释"
+git push
+```
+
+
+
 # 5. 标签
 
 ## 5.1 创建
