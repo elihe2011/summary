@@ -1064,598 +1064,9 @@ global:
 
 
 
-# 4. Metric 指标
+# 4. HTTP API
 
-## 4.1 数据模型
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-metric-model.png)
-
-Prometheus 采集的所有指标都以时间序列的形式进行存储，每个时间序列有三部分组成：
-
-- 指标名和指标标签集合：`metric_name{<label1=v1>,<label2=v2>...}`
-  - 指标名：表示这个指标是监控哪一方面的状态，比如 http_request_total 表示请求数量
-  - 指标标签：描述所选指标的维度，比如 http_request_total 下，有请求状态码 code = 200/400/500，请求方式 method = get/post等
-- 时间戳：描述当前时间序列的时间，单位：毫秒
-- 样本值：当前监控指标的具体数值
-
-
-
-### 4.1.1 样本
-
-Prometheus 会将所有采集到的样本数据以时间序列(time-series)的方式保存在内存数据库中，并定时持久化到磁盘。time-series 是按照时间戳和值的序列顺序存放的，称之为向量(vector)。每条 time-series 通过指定名称 (metrics name) 和 一组标签集(label-set)命名。
-
-可以将 time-series 理解位一个以时间为 Y 轴的数字矩阵：
-
-```text
-  ^
-  │   . . . . . . . . . . . . . . . . .   . .   node_cpu{cpu="cpu0",mode="idle"}
-  │     . . . . . . . . . . . . . . . . . . .   node_cpu{cpu="cpu0",mode="system"}
-  │     . . . . . . . . . .   . . . . . . . .   node_load1{}
-  │     . . . . . . . . . . . . . . . .   . .  
-  v
-    <------------------ 时间 ---------------->
-```
-
-在 time-series 中的每一个点称为一个样本 (sample)，样本由三部分组成：
-
-- 指标(metric)：指标名称和描述该样本特征的标签集
-- 时间戳(timestamp)：精确到毫秒
-- 样本值(value)：float64浮点型
-
-```text
-<--------------- metric ---------------------><-timestamp -><-value->
-http_request_total{status="200", method="GET"}@1434417560938 => 94355
-http_request_total{status="200", method="GET"}@1434417561287 => 94334
-
-http_request_total{status="404", method="GET"}@1434417560938 => 38473
-http_request_total{status="404", method="GET"}@1434417561287 => 38544
-
-http_request_total{status="200", method="POST"}@1434417560938 => 4748
-http_request_total{status="200", method="POST"}@1434417561287 => 4785
-```
-
-
-
-### 4.1.2 指标
-
-```text
-<metric name>{<label name>=<label value>, ...}
-```
-
-**指标名称**：反映被监控样本的含义，只能由 ASCII 字符、数字、下划线及冒号组成 `[a-zA-Z_:][a-zA-Z0-9_:]*`
-
-**标签**：反应样本的特征维度，Prometheus可通过维度对样本数据进行过滤、聚合等。只能由 ASCII 字符、数字及下划线组成 `[a-zA-Z_][a-zA-Z0-9_]`。其中以 `__` 作为前缀的标签，是系统保留的关键字，仅系统内部使用
-
-**标签值**：可以饱和任何 Unicode 编码的字符
-
-
-
-在 Prometheus 底层限制中指标名称实际上以 `__name__=<metric name>` 形式保存在数据库中，因此以下两个方式均表示同一条 time-series：
-
-```text
-api_http_requests_total{method="POST", handler="/messages"}
-
-{__name__="api_http_requests_total"，method="POST", handler="/messages"}
-```
-
-
-
-## 4.2 指标类型
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-metric-types.png)
-
-### 4.2.1 Counter
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-metric-type-counter.png)
-
-**计数器**，用于记录请求总数、错误总数等。常见的监控指标有 http_requests_total，node_cpu_seconds_total 等
-
-使用示例：
-
-- 通过 rate() 函数获取 HTTP 请求量的增长率：
-
-  ```text
-  rate(http_requests_total[5m])
-  ```
-
-- 查询当前系统中，访问量前10的 HTTP 地址
-
-  ```text
-  topk(10, http_requests_total)
-  ```
-
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-metric-type-counter-instance.png)
-
-
-
-### 4.2.2 Gauge
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-metric-type-gauge.png)
-
-**仪表盘**，系统的瞬时状态。常见的监控指标有 node_memory_MemFree_bytes，node_memory_MemAvailable_bytes。
-
-使用示例：
-
-- 查看系统当前内存状态
-
-  ```
-  node_memory_MemFree_bytes
-  ```
-
-- 通过 delta() 获取样本在一段时间内的变化情况，计算内存在两小时内的变化
-
-  ```text
-  delta(node_memory_MemAvailable_bytes{instance="172.16.8.158:9100"}[2h])
-  ```
-
-- 通过 predict_linear() 对数据变化趋势进行预测，预测系统磁盘空间在4小时之后的剩余情况
-
-  ```text
-  predict_linear(node_filesystem_files{job="cvm"}[1h], 4 * 3600)
-  ```
-
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-metric-type-gauge-instance.png)
-
-
-
-### 4.2.3 Histogram
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-metric-type-histogram.png)
-
-**直方图**，随机正态分布数据，可观察到指标在各个不同的区间范围的分布情况。表示样本数据的分布情况，通常用于统计请求的耗时、大小等。它提供了多个时间序列，包括_sum（总和）、_count（总数）以及多个_bucket（分桶统计）。
-
-在大多数情况，人们倾向于使用某些量化指标的平均值，如CPU的平均使用率、页面的平均响应时间等。这种方式的问题和明显，以系统API调用的平均响应时间为例：如果大多数API都维持在100ms的响应时间范围内，而个别请求的响应时间需要5s，那么就会导致某些 web 页面的响应时间落到中位数的情况，这种现象被称为长尾问题。
-
-为区分是平均的慢还是长尾的慢，最简单的方式就是按照请求延迟的范围进行分组。例如，统计延迟在 0~10ms, 10~20ms 之间的请求数各多少，通过这种方式可以快速分析系统慢的原因。Histogram 和 Summary 就是为了解决这样的问题，通过这两种监控指标，快速了解监控样本的分布情况。
-
-直方图对观察结果（通常是请求持续时间或响应大小等）进行采样，并将它们计数到可配置的存储桶中。它还提供所有观察值的总和。
-
-基本指标名称为 `<basename>` 的直方图在抓取过程中显示多个时间序列：
-
-- **存储桶累积计数器**： `<basename>_bucket{le="<upper inclusive bound>"}`
-- **所有观察值总和**： `<basename>_count`
-- **已观察到的事件计数**：`<basename>_count`（与上面的 `<basename>_bucket{le="+Inf"}` 相同）
-
-使用 `histogram_quantile()` 函数从直方图甚至直方图聚合中计算分位数。直方图也适用于计算 *Apdex 分数*。在对存储桶进行操作时，请记住直方图是累积的。
-
-```text
-# HELP prometheus_tsdb_compaction_chunk_range Final time range of chunks on their first compaction
-# TYPE prometheus_tsdb_compaction_chunk_range histogram
-prometheus_tsdb_compaction_chunk_range_bucket{le="100"} 0
-prometheus_tsdb_compaction_chunk_range_bucket{le="400"} 0
-prometheus_tsdb_compaction_chunk_range_bucket{le="1600"} 0
-prometheus_tsdb_compaction_chunk_range_bucket{le="6400"} 0
-prometheus_tsdb_compaction_chunk_range_bucket{le="25600"} 0
-prometheus_tsdb_compaction_chunk_range_bucket{le="102400"} 0
-prometheus_tsdb_compaction_chunk_range_bucket{le="409600"} 0
-prometheus_tsdb_compaction_chunk_range_bucket{le="1.6384e+06"} 260
-prometheus_tsdb_compaction_chunk_range_bucket{le="6.5536e+06"} 780
-prometheus_tsdb_compaction_chunk_range_bucket{le="2.62144e+07"} 780
-prometheus_tsdb_compaction_chunk_range_bucket{le="+Inf"} 780
-prometheus_tsdb_compaction_chunk_range_sum 1.1540798e+09
-prometheus_tsdb_compaction_chunk_range_count 780
-```
-
-观察请求耗时在各个桶的分布。Histogram 是累计直方图，即每个桶的只有上区间。如图表示小于 0.1 毫秒的请求数量是 18173 个，小于 0.2 毫秒 的请求为 18182 个。桶 le="0.2" 包含了桶 le="0.1" 的所有数据，0.1~0.2毫秒之间的请求量，两桶相减即得。 
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-metric-type-histogram-instance.png)
-
-
-
-### 4.2.4 Summary
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-metric-type-summary.png)
-
-**摘要**，随机正态分布数据，用来做统计分析的，与 Histogram 的区别在于，Summary 直接存储的就是百分比
-
-类似于Histogram，但更注重于分位数的计算。它同样提供了_sum、_count以及多个quantile（分位数）。虽然它还提供观察结果的总数和所有观察值的总和，但它会在滑动时间窗口内计算可配置的分位数。
-
-基本指标名称为 `<basename>` 的摘要会在抓取过程中显示多个时间序列：
-
-- 流式传输观察到的事件的 **φ-分位数** (0 ≤ φ ≤ 1)： `<basename>{quantile="<φ>"}`
-- 所有观察值**总和**： `<basename>_sum`
-- 已观察到的事件**计数**，显示为 `<basename>_count`
-
-```text
-# HELP prometheus_tsdb_wal_fsync_duration_seconds Duration of WAL fsync.
-# TYPE prometheus_tsdb_wal_fsync_duration_seconds summary
-prometheus_tsdb_wal_fsync_duration_seconds{quantile="0.5"} 0.012352463
-prometheus_tsdb_wal_fsync_duration_seconds{quantile="0.9"} 0.014458005
-prometheus_tsdb_wal_fsync_duration_seconds{quantile="0.99"} 0.017316173
-prometheus_tsdb_wal_fsync_duration_seconds_sum 2.888716127000002
-prometheus_tsdb_wal_fsync_duration_seconds_count 216
-```
-
-从上面的样本中可以得知当前Prometheus Server进行wal_fsync操作的总次数为216次，耗时2.888716127000002s。其中中位数（quantile=0.5）的耗时为0.012352463，9分位数（quantile=0.9）的耗时为0.014458005s。
-
-Summary 的百分比由客户端计算好，Prometheus 只负责抓取，可通过内置函数 histogram_quantile 在服务端计算
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-metric-type-summary-instance.png)
-
-## 4.3 存储时间
-
-Prometheus 偏向于短期监控和问题的及时告警发现，它不会保留长期的Metric数据
-默认情况下，只会在数据库中保留15天的时间序列数据。如果需要保留更长时间的数据，需要将Prometheus数据写入外部数据存储。
-
-
-
-# 5. PromQL
-
-## 5.1 基本操作
-
-### 5.1.1 查询时间序列
-
-```text
-# 查询指标的所有时间序列
-http_requests_total
-http_requests_total{}
-
-# 携带过滤条件
-http_requests_total{code="401"}
-
-# 排除条件
-http_requests_total{instance!="localhost:9090"}
-
-# 正则条件
-http_requests_total{environment=~"staging|testing|development", method!="GET"}
-```
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/promql-basic.png)
-
-
-
-### 5.1.2 范围查询
-
-```text
-http_requests_total{code="200"}[5m]
-http_requests_total{code="200"} offset 1h  
-http_requests_total{code="200"}[5m] offset 1h  
-```
-
-通过区间向量表达式查询到的结果称为**区间向量**，PromQL支持的时间单位：s, m, h, d, w, y
-
-
-
-### 5.1.3 时间位移操作
-
-通过 offset 获取前5分钟、前一天的数据
-
-```text
-http_requests_total{}      # 瞬时向量表达式，当前最新的数据
-http_requests_total{}[5m]  # 区间向量表达式，当前时间为基准，5分钟内的数据
-
-http_requests_total{}[5m] offset 5m
-http_requests_total{}[1d] offset 1d
-```
-
-
-
-### 5.1.4 集合操作
-
-样本特征标签不唯一的情况下，通过 PromQL 查询数据，会返回多条满足这些特征维度的时间序列，而聚合操作可用来对这些时间序列进行处理，形成一条新的时间序列
-
-```text
-# 所有 http 请求总量
-sum(http_requests_total)
-
-# 按 mode 计算主机 CPU 的平均使用率
-avg(node_cpu_seconds_total) by (mode)
-
-# 查询各主机的 CPU 使用率
-sum(sum(irate(node_cpu_seconds_total{mode!='idle'}[5m])) / sum(irate(node_cpu_seconds_total[5m]))) by (instance)
-```
-
-
-
-### 5.1.5 标量和字符串
-
-除了使用瞬时向量表达式和区间向量表达式外，PromQL还支持标量(Scalar)和字符串(String)
-
-- 标量：一个浮点数，没有时序。`count(http_requests_total)` 返回的依旧是瞬时向量，可以通过内置函数 scalar() 将单个瞬时向量转换为标量
-- 字符串：直接返回字符串
-
-
-
-## 5.2 操作符
-
-### 5.2.1 数学运算
-
-支持的数学运算符：`+`, `-`, `*`, `/`, `%`, `^`
-
-```text
-node_disk_written_bytes_total{device="dm-1"} / (1024 * 1024)
-
-node_disk_written_bytes_total{device="dm-1"} + node_disk_read_bytes_total{device="dm-1"}
-```
-
-
-
-### 5.2.2 布尔运算
-
-支持的布尔运算符：`==`、`!=`、`>`、`<`、`>=`、`<=`
-
-使用 bool 修饰符改变布尔运算符行为：true(1)，false(0)
-
-```text
-# 大于1000时，返回1
-http_requests_total > bool 1000
-
-# 两个标量之间的布尔运算，必须使用 bool 修饰符
-2 == bool 2     # 返回1
-```
-
-
-
-### 5.2.3 集合运算符
-
-瞬时向量表达式能够获取一个包含多个时间序列的集合，称之为瞬时向量。可以在两个瞬时向量之间进行相应的集合操作，支持如下操作符：
-
-- v1 and v2：两个向量的交集
-- v1 or v2：两个向量的并集
-- v1 unless v2：v1中没有与v2匹配的元素集合
-
-
-
-### 5.2.4 操作符优先级
-
-优先级由高到低，依次为：
-
-- `^`
-- `*, /, %`
-- `+, -`
-- `==, !=, <, <=, >, >=`
-- `and, unless`
-- `or`
-
-
-
-### 5.2.5 匹配模式
-
-向量与向量之间进行运算操作时会基于默认的匹配规则：依次找到与左边向量元素匹配（标签完全一致）的右边向量元素进行运算，如果没有找到，则直接丢弃
-
-**一对一匹配(one-to-one)**：从操作符的两边表达式获取瞬时变量依次比较并找到唯一配（标签完全一致）的样本值
-
-```text
-vector1 <operator> vector2
-```
-
-在操作符两边表达式标签不一致的情况下，可使用 on (label list) 或 ignoring (label list) 来修饰标签的匹配行为
-
-```text
-<vector expr> <bin-op> ignoring(<label list>) <vector expr>
-<vector expr> <bin-op> on(<label list>) <vector expr>
-```
-
-示例样本：
-
-```text
-method_code:http_errors:rate5m{method="get", code="500"}  24
-method_code:http_errors:rate5m{method="get", code="404"}  30
-method_code:http_errors:rate5m{method="put", code="501"}  3
-method_code:http_errors:rate5m{method="post", code="500"} 6
-method_code:http_errors:rate5m{method="post", code="404"} 21
-
-method:http_requests:rate5m{method="get"}  600
-method:http_requests:rate5m{method="del"}  34
-method:http_requests:rate5m{method="post"} 120
-```
-
-获取过去5分钟内，HTTP 请求状态码为 500 的所在请求中的比例：
-
-```text
-method_code:http_errors:rate5m{code="500"} / ignoring(code) method:http_requests:rate5m
-```
-
-计算结果：
-
-```text
-{method="get"}  0.04            //  24 / 600
-{method="post"} 0.05            //   6 / 120
-```
-
-
-
-**多对一和一对多**：”一“的每个向量元素可以与”多“的多个元素匹配。使用 group 修饰符：group_left 或 group_right 来确定哪一个向量具有更高的基数
-
-```text
-<vector expr> <bin-op> ignoring(<label list>) group_left(<label list>) <vector expr>
-<vector expr> <bin-op> ignoring(<label list>) group_right(<label list>) <vector expr>
-<vector expr> <bin-op> on(<label list>) group_left(<label list>) <vector expr>
-<vector expr> <bin-op> on(<label list>) group_right(<label list>) <vector expr>
-```
-
-使用表达式：
-
-```text
-method_code:http_errors:rate5m / ignoring(code) group_left method:http_requests:rate5m
-```
-
-该表达式中，左向量`method_code:http_errors:rate5m`包含两个标签method和code。而右向量`method:http_requests:rate5m`中只包含一个标签method，因此匹配时需要使用ignoring限定匹配的标签为code。 在限定匹配标签后，右向量中的元素可能匹配到多个左向量中的元素 因此该表达式的匹配模式为多对一，需要使用group修饰符group_left指定左向量具有更好的基数。
-
-运算结果：
-
-```
-{method="get", code="500"}  0.04            //  24 / 600
-{method="get", code="404"}  0.05            //  30 / 600
-{method="post", code="500"} 0.05            //   6 / 120
-{method="post", code="404"} 0.175           //  21 / 120
-```
-
-
-
-## 5.3 集合操作
-
-内置集合操作函数：
-
-- sum
-- min
-- max
-- avg
-- stddev 标准差
-- stdvar 标准方差
-- count
-- count_values  对 value 进行计数
-- bottomk 后 n 条时序
-- topk 前 n 条时序
-- quantile 分位数
-
-聚合操作语法：
-
-```text
-<aggr-op>([parameter,] <vector expression>) [without|by (<label list>)]
-```
-
-其中：只有`count_values`, `quantile`, `topk`, `bottomk` 支持参数
-
-without： 用于从计算结果中移除列举的标签，保留其他标签
-
-by：与 without 相反，结果向量中只保留列出的标签，其余标签移除
-
-```
-sum(http_requests_total) without (instance)
-
-sum(http_requests_total) by (code,handler,job, method)
-```
-
-
-
-示例：
-
-```text
-# HTTP 请求总量
-sum(http_requests_total)
-
-sum(prometheus_http_requests_total{}) without (code,handler,job) 
-sum(prometheus_http_requests_total{}) by (instance) 
-
-// 整个服务的QPS
-sum(rate(demo_api_request_duration_seconds_count{job="demo", method="GET", status="200"}[5m]))
-
-// 具体接口的QPS
-sum(rate(demo_api_request_duration_seconds_count{job="demo", method="GET", status="200"}[5m])) by(path)
-
-// 排除接口
-sum(rate(demo_api_request_duration_seconds_count{job="demo", method="GET", status="200"}[5m])) without(path)
-
-max(prometheus_http_requests_total{})
-min(prometheus_http_requests_total{})
-avg(prometheus_http_requests_total)
-
-# 为每个唯一的样本值输出一个时间序列，并包含一个额外的标签
-count_values("count", http_requests_total)
-
-# 请求数前5位的序列样本
-topk(5, http_requests_total)
-
-# 计算当前样本数据分布情况 quantile(φ, express)其中0 ≤ φ ≤ 1
-quantile(0.5, http_requests_total)  # 找到当前样本数据中的中位数
-```
-
-
-
-## 5.4 内置函数
-
-### 5.4.1 计算 Counter 指标增长率
-
-```
-# increase 获取区间向量中第一个后最后一个样本并返回其增长量
-increase(node_cpu_seconds_total[2m]) / 120    # 两分钟的增长量，除以120s得到最近两分钟的平均增长率
-
-# rate 直接计算区间向量在时间窗口内的平均增长率
-rate(node_cpu_seconds_total[2m])    # 效果同上
-
-# irate 同样计算区间内的增长率，但其反映出瞬时增长率，可用于避免时间窗口范围内的”长尾问题“，具有更好的灵敏度
-irate(node_cpu_seconds_total[2m])
-```
-
-**rate**：`Counter` 指标的平均变化速率。可用于求某个时间区间内的请求速率，即QPS
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-PromQL-rate.png)
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-PromQL-rate-instance.png)
-
-**irate**：更高的灵敏度，通过时间区间中最后两个样本数据来计算区间向量的增长速率，解决 rate() 函数无法处理的突变
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-PromQL-irate.png)
-
-![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/prometheus/prometheus-PromQL-irate-instance.png)
-
-
-
-### 5.4.2 预测 Gauge 指标变化趋势
-
-```text
-# predict_linear 函数可以预测时间序列在n秒后的值。它基于简单线性回归的方式，对时间窗口内的样本数据进行统计，从而对时间序列的变化趋势做成预测
-predict_linear(node_filesystem_free{job="node"}[2h], 4 * 3600) < 0  # 基于2小时的样本数据，预测主机可用磁盘是否在4小时后被占满
-```
-
-
-
-### 5.4.3 统计 Histogram 指标的分位数
-
-区别于 Summary 直接在客户端计算了数据分布的分位数情况，Histogram 的分位数计算需要通过 `histogram_quantile(φ float, b instant-vector)`函数进行计算。其中φ（0<φ<1）表示需要计算的分位数.
-
-指标http_request_duration_seconds_bucket：
-
-```text
-# HELP http_request_duration_seconds request duration histogram
-# TYPE http_request_duration_seconds histogram
-http_request_duration_seconds_bucket{le="0.5"} 0
-http_request_duration_seconds_bucket{le="1"} 1
-http_request_duration_seconds_bucket{le="2"} 2
-http_request_duration_seconds_bucket{le="3"} 3
-http_request_duration_seconds_bucket{le="5"} 3
-http_request_duration_seconds_bucket{le="+Inf"} 3
-http_request_duration_seconds_sum 6
-http_request_duration_seconds_count 3
-```
-
-计算中位分位数：
-
-```text
-histogram_quantile(0.5, http_request_duration_seconds_bucket)
-```
-
-
-
-### 5.4.4 动态标签替换
-
-label_replace 为时间序列添加额外的标签：
-
-```text
-label_replace(v instant-vector, dst_label string, replacement string, src_label string, regex string)
-```
-
-label_join 将时间序列中的多个标签 src_label 的值，通过 separator 作为连接符写入到一个新的标签 dst_label 中
-
-```text
-label_join(v instant-vector, dst_label string, separator string, src_label_1 string, src_label_2 string, ...)
-```
-
-示例：增加host标签
-
-```text
-# 原始数据
-up{instance="localhost:8080",job="cadvisor"}    1
-up{instance="localhost:9090",job="prometheus"}    1
-up{instance="localhost:9100",job="node"}    1
-
-# 替换操作
-label_replace(up, "host", "$1", "instance",  "(.*):.*")
-
-# 输出结果
-up{host="localhost",instance="localhost:8080",job="cadvisor"}    1
-up{host="localhost",instance="localhost:9090",job="prometheus"}    1
-up{host="localhost",instance="localhost:9100",job="node"} 1
-```
-
-
-
-# 6. HTTP API
-
-## 6.1 瞬时数据查询
+## 4.1 瞬时数据查询
 
 查询接口：`GET /api/v1/query`
 
@@ -1691,7 +1102,7 @@ $ curl 'http://172.16.7.181:30090/api/v1/query?query=up\{job="cvm"\}'
 
 
 
-## 6.2 响应数据类型
+## 4.2 响应数据类型
 
 返回数据格式：
 
@@ -1740,7 +1151,7 @@ $ curl 'http://172.16.7.181:30090/api/v1/query?query=up\{job="cvm"\}'
 
   
 
-## 6.3 区间数据查询
+## 4.3 区间数据查询
 
 查询接口：`GET /api/v1/query_range`
 
@@ -1796,9 +1207,9 @@ $ curl 'http://172.16.7.181:30090/api/v1/query_range?query=up\{job="cvm"\}&start
 
 
 
-# 7. 最佳实践
+# 5. 最佳实践
 
-## 7.1 监控维度
+## 5.1 监控维度
 
 | 级别              | 监控什么                                                   | Exporter                         |
 | ----------------- | ---------------------------------------------------------- | -------------------------------- |
@@ -1811,7 +1222,7 @@ $ curl 'http://172.16.7.181:30090/api/v1/query_range?query=up\{job="cvm"\}&start
 
 
 
-## 7.2 黄金指标
+## 5.2 黄金指标
 
 Four Golden Signals 是 Google 针对大量分布式监控的经验总结，4个黄金指标可以在服务级别帮助衡量终端用户体验、服务中断、业务影响等层面的问题。主要关注的四个核心指标：延迟（Latency）、流量（Throughput）、错误（Errors）和饱和度（Saturation）。
 
@@ -1871,7 +1282,7 @@ Four Golden Signals 是 Google 针对大量分布式监控的经验总结，4个
 
 
 
-## 7.3 RED方法
+## 5.3 RED方法
 
 RED方法是Weave Cloud在基于Google的“4个黄金指标”的原则下结合Prometheus以及Kubernetes容器实践，细化和总结的方法论，特别适合于云原生应用以及微服务架构应用的监控和度量。主要关注以下三种关键指标：
 
@@ -1883,7 +1294,7 @@ RED方法是Weave Cloud在基于Google的“4个黄金指标”的原则下结�
 
 
 
-## 7.4 USE方法
+## 5.4 USE方法
 
 USE 即 "Utilization Saturation and Errors Method"，主要用于分析系统性能问题，可以指导用户快速识别资源瓶颈以及错误的方法。正如USE方法的名字所表示的含义，USE方法主要关注与资源的：使用率(Utilization)、饱和度(Saturation)以及错误(Errors)。
 
@@ -1897,9 +1308,9 @@ USE 即 "Utilization Saturation and Errors Method"，主要用于分析系统性
 
 
 
-# 8. 存储
+# 6. 存储
 
-## 8.1 TSDB
+## 6.1 TSDB
 
 Prometheus 使用一种称为 TSDB（时间序列数据库）的存储引擎来存储时间序列数据。以下是 Prometheus 存储时间序列数据的基本原理：
 
@@ -1957,7 +1368,7 @@ Prometheus 使用一种称为 TSDB（时间序列数据库）的存储引擎来�
 
 
 
-## 8.2 远程存储
+## 6.2 远程存储
 
 **启动配置项**：
 
@@ -2003,13 +1414,15 @@ remote_read:
 
 
 
-# 9. TSDB Admin API
+# 7. TSDB Admin API
 
 Prometheus TSDB Admin API提供了三个接口，分别是`快照(Snapshot)`， `数据删除(Delete Series)`，`数据清理(Clean Tombstones)`
 
 默认是关闭的，需要加入启动参数`--web.enable-admin-api`才会启动
 
-## 9.1 创建快照
+
+
+## 7.1 创建快照
 
 在 TSDB 数据目录下创建文件 `snapshots/<datetime>-<rand>`
 
@@ -2034,7 +1447,7 @@ drwxr-xr-x 27 nobody nogroup 4096 May 23 15:18 20250523T071823Z-7bbda610ffb7bc2b
 
 
 
-## 9.2 删除指标
+## 7.2 删除指标
 
 ```
 POST /api/v1/admin/tsdb/delete_series
@@ -2055,7 +1468,7 @@ curl -v -X PUT -g 'http://localhost:9090/api/v1/admin/tsdb/delete_series?match[]
 
 
 
-## 9.3 磁盘清理
+## 7.3 磁盘清理
 
 使用数据删除接口将 metric 数据删除后，只是将数据标记为删除，实际的数据 (tombstones) 仍然存在于磁盘上，其在将来的某一时刻会被Prometheus清除释放空间，也可以通过数据清理接口显式地清除。
 

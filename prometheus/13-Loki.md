@@ -336,6 +336,226 @@ scrape_configs:
 
 
 
+# 4. 组件部署
+
+## 4.1 Loki
+
+```bash
+mkdir -p /opt/loki && cd $_
+mkdir -p data/{chunks,index}
+
+cat > loki.yaml <<EOF
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  #grpc_listen_port: 9096
+  log_level: debug
+  grpc_server_max_concurrent_streams: 1000
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
+
+limits_config:
+  metric_aggregation_enabled: true
+
+schema_config:
+  configs:
+    - from: 2025-03-19
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h      # 每张表的时间范围
+
+pattern_ingester:
+  enabled: true
+  metric_aggregation:
+    loki_address: localhost:3100
+
+ruler:
+  alertmanager_url: http://192.168.3.111:9093
+EOF
+
+docker run -d --name loki \
+  --restart always \
+  -p 3100:3100 \
+  -v /opt/loki/loki.yaml:/etc/loki/local-config.yaml \
+  -v /opt/loki/data:/loki \
+  grafana/loki:3.4.2 \
+  -config.file=/etc/loki/local-config.yaml
+```
+
+
+
+指标数据：http://192.168.3.111:3100/metrics
+
+运行状态：http://192.168.3.111:3100/ready    // 显示ready时OK
+
+
+
+## 4.2 Promtail
+
+```bash
+mkdir -p /opt/promtail && cd $_
+
+cat > promtail.yaml <<EOF
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://192.168.3.111:3100/loki/api/v1/push
+
+scrape_configs:
+- job_name: system
+  static_configs:
+  - targets:
+      - localhost
+    labels:
+      job: varlogs
+      __path__: /var/log/*log
+- job_name: rsyslog
+  static_configs:
+  - targets:
+      - localhost
+    labels:
+      job: varlogs
+      __path__: /var/log/rsyslog/*.log
+EOF
+
+
+docker run -d --name promtail \
+  --restart always \
+  -p 9080:9080 \
+  -p 1514:1514/udp \
+  -v /opt/promtail/promtail.yaml:/etc/promtail/local-config.yaml \
+  grafana/promtail:3.4.2 \
+  -config.file=/etc/promtail/local-config.yaml
+  
+docker run -d --name promtail \
+  --restart always \
+  -p 9080:9080 \
+  -p 1514:1514 \
+  -v /opt/promtail/promtail.yaml:/etc/promtail/local-config.yaml \
+  grafana/promtail:3.4.2 \
+  -config.file=/etc/promtail/local-config.yaml
+  
+docker run -d --name promtail \
+  --restart always \
+  -p 9080:9080 \
+  -v /var/log/rsyslog:/var/log/rsyslog \
+  -v /opt/promtail/promtail.yaml:/etc/promtail/local-config.yaml \
+  grafana/promtail:3.4.2 \
+  -config.file=/etc/promtail/local-config.yaml  
+```
+
+
+
+可用标签:
+
+```
+Available Labels
+__syslog_connection_ip_address: The remote IP address.
+__syslog_connection_hostname: The remote hostname.
+__syslog_message_severity: The syslog severity parsed from the message. Symbolic name as per syslog_message.go.
+__syslog_message_facility: The syslog facility parsed from the message. Symbolic name as per syslog_message.go and syslog(3).
+__syslog_message_hostname: The hostname parsed from the message.
+__syslog_message_app_name: The app-name field parsed from the message.
+__syslog_message_proc_id: The procid field parsed from the message.
+__syslog_message_msg_id: The msgid field parsed from the message.
+__syslog_message_sd_<sd_id>[_<iana_enterprise_id>]_<sd_name>: The structured-data field parsed from the message. The data field 
+```
+
+
+
+
+
+## 4.3 rsyslog
+
+### 4.3.1 安装
+
+```bash
+apt install rsyslog
+```
+
+
+
+### 4.3.2 服务端
+
+```bash
+# 1. 开启udp和tcp接收日志端口
+vi /etc/rsyslog.conf
+...
+# provides UDP syslog reception
+module(load="imudp")
+input(type="imudp" port="514")
+
+# provides TCP syslog reception
+module(load="imtcp")
+input(type="imtcp" port="514")
+
+# 2. 配置远程日志存储
+cat > /etc/rsyslog.d/remote.conf <<EOF
+#### GLOBAL DIRECTIVES ####
+# Use default timestamp format  # 使用自定义的格式
+#$ActionFileDefaultTemplate RSYSLOG_TraditionalFileFormat
+#$template myFormat,"%timestamp% %fromhost-ip% %syslogtag% %msg%\n"
+#$ActionFileDefaultTemplate myFormat
+
+# 根据客户端的IP单独存放主机日志在不同目录，rsyslog需要手动创建
+#$template RemoteLogs,"/var/log/rsyslog/%fromhost-ip%/%syslogtag%_%$YEAR%-%$MONTH%-%$DAY%-%$hour%:%$minute%.log"
+$template RemoteLogs,"/var/log/rsyslog/%fromhost-ip%/%syslogtag%_%$YEAR%-%$MONTH%-%$DAY%.log
+# 排除本地主机IP日志记录，只记录远程主机日志
+:fromhost-ip, !isequal, "127.0.0.1" ?RemoteLogs
+# 忽略之前所有的日志，远程主机日志记录完之后不再继续往下记录
+& ~
+EOF
+
+# 3. 重启服务
+systemctl restart rsyslog
+
+# 4. 检查监听端口
+lsof -i :514
+```
+
+
+
+### 4.3.3 客户端
+
+```bash
+# 配置服务端
+cat > /etc/rsyslog.d/99-remote.conf <<EOF
+*.* @192.168.3.111:514     # UDP
+# *.* @@192.168.3.111:514  # TCP
+EOF
+
+# 重启服务
+systemctl restart rsyslog
+```
+
+
+
 
 
 

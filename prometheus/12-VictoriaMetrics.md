@@ -138,7 +138,7 @@ docker-compose up -d
 
 
 
-Prometheus-Remote-Write：http://192.168.3.108:8481/insert/0/prometheus
+Prometheus-Remote-Write：http://192.168.3.108:8480/insert/0/prometheus
 
 Grafana-DataSource: http://192.168.3.108:8481/select/0/prometheus
 
