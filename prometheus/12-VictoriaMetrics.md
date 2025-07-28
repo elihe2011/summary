@@ -57,10 +57,16 @@ docker run -d \
    --restart=always \
    victoriametrics/victoria-metrics:v1.120.0 \
    --storageDataPath=/storage \
-   --retentionPeriod=365d \
+   --retentionPeriod=12 \
    --httpListenAddr=:8428 \
+   --maxLabelsPerTimeseries=30 \
    --loggerTimezone=Asia/Shanghai
 ```
+
+参数说明：
+
+- retentionPeriod：数据保存时间，默认单位month
+- maxLabelsPerTimeseries：限制标签数量，避免 OOM
 
 
 

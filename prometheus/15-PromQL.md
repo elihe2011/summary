@@ -721,9 +721,9 @@ quantile_over_time(0.95, ssCpuIdle{instance="172.16.7.181"}[1d])
 
 
 
-# 11. 统计 Histogram 指标的分位数
+# 11. Histogram 分位数
 
-区别于 Summary 直接在客户端计算了数据分布的分位数情况，Histogram 的分位数计算需要通过 `histogram_quantile(φ float, b instant-vector)`函数进行计算。其中φ（0<φ<1）表示需要计算的分位数.
+区别于 Summary 直接在客户端计算了数据分布的分位数情况，Histogram 的分位数计算需要通过 `histogram_quantile(φ float, b instant-vector)`函数进行计算。其中 φ（0<φ<1）表示需要计算的分位数.
 
 指标http_request_duration_seconds_bucket：
 
