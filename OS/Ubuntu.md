@@ -410,6 +410,39 @@ systemctl restart smbd
 
 
 
+# 9. 防火墙
+
+```bash
+# 只允许 192.168.3.* 网段访问
+ufw allow out to 192.168.3.0/24
+ufw deny out to any
+ufw allow from 192.168.3.0/24
+ufw deny from any
+
+ufw reload
+ufw enable
+
+ufw status verbose
+```
+
+
+
+# 10. 系统时间
+
+```bash
+# 关闭NTP
+timedatectl status
+timedatectl set-ntp false
+
+# 修改时间
+date -s "10 days ago"
+
+# 写入硬件
+hwclock --systohc
+```
+
+
+
 # Z. 问题
 
 ## 1. 虚拟机磁盘问题
