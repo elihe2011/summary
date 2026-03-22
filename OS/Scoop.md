@@ -141,3 +141,40 @@ node --version
 npm --version
 ```
 
+
+
+# FAQ
+
+## 1. 无法下载
+
+```
+fatal: unable to access 'https://github.com/ScoopInstaller/Scoop.git/': Recv failure: Connection was reset
+```
+
+解决方法：
+
+```powershell
+$env:HTTPS_PROXY='https://127.0.0.1:7890'
+$env:HTTP_PROXY='http://127.0.0.1:7890'
+```
+
+
+
+## 2. 更新失败
+
+```
+Updating Scoop...
+fatal: unable to access 'https://github.com/ScoopInstaller/Scoop.git/': schannel: failed to receive handshake, SSL/TLS connection failed
+Update failed.
+```
+
+解决方法：取消代理
+
+```powershell
+$env:HTTPS_PROXY=$null
+$env:HTTP_PROXY=$null
+
+Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue
+Remove-Item Env:HTTPS_PROXY -ErrorAction SilentlyContinue
+```
+

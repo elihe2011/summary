@@ -738,6 +738,50 @@ filters:
 
 
 
+# 4. generator 配置
+
+
+
+
+
+
+
+## 4.x filters
+
+```yaml
+# generator.yml
+modules:
+  network_equipment:
+    walk:
+      - 1.3.6.1.2.1.2.2.1.2          # ifDescr
+      - 1.3.6.1.2.1.2.2.1.4          # ifSpeed  
+      - 1.3.6.1.2.1.2.2.1.7          # ifAdminStatus
+      - 1.3.6.1.2.1.2.2.1.10         # ifInOctets
+      - 1.3.6.1.2.1.31.1.1.1.6       # ifHCInOctets
+    
+    filters:
+      # 静态过滤 - 生成器阶段处理
+      static:
+        - targets:
+            - 1.3.6.1.2.1.2.2.1.2    # ifDescr
+          indices: ["1", "2", "3", "48"]  # 只采集这4个端口的索引
+      
+      # 动态过滤 - 运行时处理  
+      dynamic:
+        # 只采集管理状态为 up(1) 或 down(2) 的接口
+        - oid: 1.3.6.1.2.1.2.2.1.7        # ifAdminStatus
+          targets:
+            - 1.3.6.1.2.1.2.2.1.4         # ifSpeed
+            - 1.3.6.1.2.1.31.1.1.1.6      # ifHCInOctets
+          values: ["1", "2"]               # up(1), down(2)
+        
+        # 只采集速率大于等于 1G 的接口
+        - oid: 1.3.6.1.2.1.2.2.1.4        # ifSpeed
+          targets:
+            - 1.3.6.1.2.1.2.2.1.10        # ifInOctets
+          values: ["1[0-9]{9}"]            # 匹配 1000000000+ (1G+)
+```
+
 
 
 
