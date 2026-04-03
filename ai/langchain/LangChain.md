@@ -129,6 +129,59 @@ Prompt 是操作大模型的唯一接口，一问一答
 
 
 
+## 2.4 核心组件
+
+LangChain 的核心组件主要涉及四个部分：Model I/O、Chains、RAG、Agents
+
+
+
+### 2.4.1 Model I/O
+
+标准化大模型的输入和输出，包含提示模板、模型调用和格式化输出
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/langchain/model-io.png)
+
+- **Format**：通过模板管理大模型的输入，将原始数据格式化成模型可以处理的形式，插入到一个模板中，然后送入模型进行处理
+- **Predict**：调用 LLM，进行预测或生成回答
+- **Parse**：规范化模型输出，比如将模型输出格式化为 JSON
+
+
+
+### 2.4.2 Chains
+
+"链" 用于将多个组件组合成一个完整的流程，方便链式调用
+
+
+
+### 2.4.3 Retrieval
+
+对应 RAG：检索外部数据，作为参考信息输入 LLM 辅助生成答案
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/langchain/RAG-flow.png)
+
+- **Source**：多种类型的数据源，如视频、图片、文本、代码、文档等
+- **Load**：将多源异构数据统一加载为文档对象
+- **Transform**：对文档进行转换和处理，比如将文本切分为小块
+- **Embed**：将文本编码为向量
+- **Store**：将向量化的数据存储起来
+- **Retrieve**：将文本库中检索相关的文本段落
+
+
+
+### 2.4.4 Agents
+
+**Agent 自主规划执行步骤，并使用工具来完成任务**
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/langchain/agent-diagram.png)
+
+
+
+
+
+
+
+
+
 # 2. 环境搭建
 
 ## 2.1 Python 虚拟环境

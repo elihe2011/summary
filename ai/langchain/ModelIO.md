@@ -303,6 +303,492 @@ if __name__ == "__main__":
 
 
 
+#### 1.2.2.1 实例化
+
+方式一：通过构造方法实例化
+
+```python
+from langchain_core.prompts import PromptTemplate
+
+# 使用构造方法实例化提示词模板
+template = PromptTemplate(
+    template="请评价{product}的优缺点，包括{aspect1}和{aspect2}。",
+    input_variables=["product", "aspect1", "aspect2"],
+)
+
+# 使用模板生成提示词
+prompt1 = template.format(product="智能手机", aspect1="电池续航", aspect2="拍照质量")
+prompt2 = template.format(product="笔记本电脑", aspect1="处理速度", aspect2="便携性")
+
+if __name__ == "__main__":
+    print(prompt1)
+    print(prompt2)
+```
+
+
+
+方式二：通过 `from_template` 方法实例化
+
+```python
+from langchain_core.prompts import PromptTemplate
+
+# 使用 from_template 方法实例化提示词模板
+template = PromptTemplate.from_template("请评价{product}的优缺点，包括{aspect1}和{aspect2}。")
+
+# 使用模板生成提示词
+prompt = template.format(product="智能手机", aspect1="电池续航", aspect2="拍照质量")
+
+if __name__ == "__main__":
+    print(prompt)
+```
+
+
+
+#### 1.2.2.2 部分提示模板
+
+方式一：指定 `partial_variables` 参数
+
+```python
+from langchain_core.prompts import PromptTemplate
+
+template = PromptTemplate(
+    template="{foo} {bar}",
+    input_variables=["foo", "bar"],
+    partial_variables={"foo": "hello"},   # 预定义部分变量默认值
+)
+
+# 使用模板生成提示词
+prompt = template.format(bar="world")
+
+if __name__ == "__main__":
+    print(prompt)
+```
+
+
+
+方式二：使用 partial 方法指定默认值
+
+```python
+from langchain_core.prompts import PromptTemplate
+
+template = PromptTemplate.from_template("{foo} {bar}")
+
+# 预定义部分变量默认值
+partial_template = template.partial(foo="hello")
+
+# 使用模板生成提示词
+prompt = partial_template.format(bar="world")
+
+if __name__ == "__main__":
+    print(prompt)
+```
+
+
+
+#### 1.2.2.3 调用方法
+
+- `format()`：返回模板字符串
+- `invoke()`：返回 `PromptValue` 对象，可使用 `to_string()` 方法将其转换为字符串
+
+```python
+from langchain_core.prompts import PromptTemplate
+
+# 使用 from_template 方法实例化提示词模板
+template = PromptTemplate.from_template("{foo} {bar}")
+
+# PromptValue 对象
+prompt = template.invoke({"foo": "hello", "bar": "world"})
+
+# str 对象
+prompt_str = prompt.to_string()
+
+if __name__ == "__main__":
+    print(prompt)
+    print(prompt_str)
+```
+
+
+
+### 1.2.3  `ChatPromptTemplate`
+
+`ChatPromptTemplate` 是创建聊天消息列表的提示模板，支持 System/Human/AI 等不同角色的消息模板
+
+
+
+#### 1.2.3.1 实例化
+
+messages 参数格式：
+
+- `List[tuple]`
+- `List[dict]`
+
+
+
+方式一：通过构建方法创建
+
+```python
+from langchain_core.prompts import ChatPromptTemplate
+
+template = ChatPromptTemplate(
+    [
+        ("system", "你是一个AI开发工程师，你的名字是{name}"),
+        ("human", "你能帮我做什么？"),
+        ("ai", "我能开发很多{thing}"),
+        ("human", "{user_input}"),
+    ]
+)
+
+prompt = template.format_messages(name="编程助手", thing="智能体", user_input="请帮忙开发一个Gin Web框架模板")
+
+if __name__ == "__main__":
+    print(prompt)
+```
+
+
+
+方式二：通过 `from_messages` 方法创建
+
+```python
+template = ChatPromptTemplate.from_messages(
+    [
+        ("system", "你是一个AI开发工程师，你的名字是{name}"),
+        ("human", "你能帮我做什么？"),
+        ("ai", "我能开发很多{thing}"),
+        ("human", "{user_input}"),
+    ]
+)
+```
+
+
+
+#### 1.2.3.2 调用方法
+
+```python
+from langchain_core.prompts import ChatPromptTemplate
+
+template = ChatPromptTemplate(
+    [
+        ("system", "你是一个AI开发工程师，你的名字是{name}"),
+        ("human", "你能帮我做什么？"),
+        ("ai", "我能开发很多{thing}"),
+        ("human", "{user_input}"),
+    ]
+)
+
+prompt = template.invoke({
+    "name": "编程助手",
+    "thing": "智能体",
+    "user_input": "请帮忙开发一个Gin Web框架模板",
+})
+
+if __name__ == "__main__":
+    print(prompt)
+```
+
+
+
+#### 1.2.3.3 消息占位符
+
+当希望在格式化过程中插入消息列表时，比如 Agent 暂存中间步骤，需要使用 MessagePlaceholder，负责在特定位置添加消息列表
+
+```python
+from langchain_core.prompts import ChatPromptTemplate
+
+template = ChatPromptTemplate.from_messages(
+    [
+        ("system", "你是一个助手"),
+        ("placeholder", "{conversation}"),
+        # 等价于 MessagePlaceholder(variable_name="conversation", optional=True)
+    ]
+)
+
+prompt = template.format_messages(
+    conversation=[
+        ("human", "你好"),
+        ("ai", "想让我帮你做些什么？"),
+        ("human", "能帮我做一个冰淇淋吗？"),
+        ("ai", "不能"),
+    ]
+)
+
+if __name__ == "__main__":
+    print(prompt)
+```
+
+
+
+#### 1.2.3.4 多模态提示词
+
+可以使用提示模板来格式化多模态输入，比如将图片链接作为输入
+
+```python
+import os
+
+from langchain.chat_models import init_chat_model
+from langchain_core.prompts import ChatPromptTemplate
+
+llm = init_chat_model(
+    model="qwen3-vl-flash-2025-10-15",
+    model_provider="openai",
+    base_url=os.getenv("DASHSCOPE_BASE_URL"),
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+)
+
+template = ChatPromptTemplate(
+    [
+        {"role": "system", "content": "用中文简短描述图片内容"},
+        {"role": "user", "content": [{"image_url": "{image_url}"}]},
+    ]
+)
+
+prompt = template.format_messages(
+    image_url="https://media.geeksforgeeks.org/wp-content/uploads/20250825123558167415/LangChain.webp",
+)
+
+if __name__ == "__main__":
+    resp = llm.invoke(prompt)
+    print(resp.content)
+```
+
+
+
+### 1.2.4 外部加载 Prompt
+
+将 prompt 保存为 JSON 或 YAML 等格式的文件，通过读取指定路径的格式化文件，获取相应的 prompt.
+
+
+
+#### 1.2.4.1 json
+
+```json
+{
+    "_type": "prompt",
+    "input_variables": ["name", "what"],
+    "template": "请{name}讲一个{what}的故事"
+}
+```
+
+```python
+from langchain_core.prompts import load_prompt
+
+template = load_prompt("prompts/prompt.json", encoding="utf-8")
+print(template.format(name="张三", what="搞笑的"))
+```
+
+
+
+#### 1.2.4.2 yaml
+
+```yaml
+_type: "prompt"
+input_variables: ["name", "what"]
+template: "请{name}讲一个{what}的故事"
+```
+
+```python
+from langchain_core.prompts import load_prompt
+
+template = load_prompt("prompts/prompt.yaml", encoding="utf-8")
+print(template.format(name="年轻人", what="滑稽"))
+```
+
+
+
+## 1.3 Output Parsers
+
+LLM 返回的内容通常都是文本字符串，而实际 AI 应用开发一般希望模型可以返回更直观、更格式化的内容，LangChain 提供输出解析器 (`OutputParser`) 讲模型输出解析为结构化数据
+
+
+
+### 1.3.1 `StrOutputParser`
+
+`StrOutputParser` 是一个简单的解析器，从结果中提取 content 字段
+
+```python
+import os
+
+from langchain.chat_models import init_chat_model
+from langchain_core.output_parsers import StrOutputParser
+
+llm = init_chat_model(
+    model="qwen3-vl-flash-2025-10-15",
+    model_provider="openai",
+    base_url=os.getenv("DASHSCOPE_BASE_URL"),
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+)
+
+messages = [
+    {"role": "system", "content": "你是一个机器人"},
+    {"role": "user", "content": "你好"},
+]
+
+if __name__ == "__main__":
+    resp = llm.invoke(messages)
+    print(resp)
+
+    # 等效于 resp.content
+    result = StrOutputParser().invoke(resp)
+    print(result)
+```
+
+
+
+### 1.3.2 `JsonOutputParser`
+
+`JsonOutputParser` 能够结合 Pydantic 模型进行数据验证，自动验证字段类型和内容 (如字符串、数字、嵌套对象等)
+
+```python
+import os
+
+from langchain.chat_models import init_chat_model
+from langchain_core.output_parsers import JsonOutputParser
+from pydantic import BaseModel, Field
+
+llm = init_chat_model(
+    model="qwen3-vl-flash-2025-10-15",
+    model_provider="openai",
+    base_url=os.getenv("DASHSCOPE_BASE_URL"),
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+)
+
+class Prime(BaseModel):
+    prime: list[int] = Field(description="素数")
+    count: list[int] = Field(description="小于该素数的素数个数")
+
+json_parser = JsonOutputParser(pydantic_object=Prime)
+print(json_parser.get_format_instructions())
+
+messages = [
+    {"role": "system", "content": json_parser.get_format_instructions()},
+    {"role": "user", "content": "任意生成5个1000-100000之间素数，并标出小于该素数的素数个数"},
+]
+
+if __name__ == "__main__":
+    resp = llm.invoke(messages)
+    print(resp)
+
+    json_result = json_parser.invoke(resp)
+    print(json_result)
+```
+
+
+
+## 1.4 Structured Outputs
+
+### 1.4.1 TypedDict
+
+TypedDict 提供了一个使用 Python 内置类型的简单方案，但没有验证功能
+
+```python
+import os
+from typing import TypedDict, Annotated, List
+
+from langchain.chat_models import init_chat_model
+
+llm = init_chat_model(
+    model="qwen3-vl-flash-2025-10-15",
+    model_provider="openai",
+    base_url=os.getenv("DASHSCOPE_BASE_URL"),
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+)
+
+class Animal(TypedDict):
+    animal: Annotated[str, "动物"]
+    emoji: Annotated[str, "表情"]
+
+class AnimalList(TypedDict):
+    animals: Annotated[List[Animal], "动物与表情列表"]
+
+messages = [
+    {
+        "role": "user",
+        "content": "任意生成三种动物，以及它们的 emoji 表情",
+    }
+]
+
+llm_with_structured_output = llm.with_structured_output(AnimalList)
+
+if __name__ == "__main__":
+    resp = llm_with_structured_output.invoke(messages)
+    print(resp)
+```
+
+
+
+### 1.4.2 Pydantic
+
+Pydantic 模型提供了丰富的功能集，包括字段验证、描述和嵌套结构
+
+```python
+from pydantic import BaseModel, Field
+
+class Animal(BaseModel):
+    animal: str = Field(description="动物")
+    emoji: str = Field(description="表情")
+
+class AnimalList(BaseModel):
+    animals: list[Animal] = Field(description="动物与表情列表")
+```
+
+
+
+### 1.4.3 JSON Schema
+
+若需最大程度的控制或互操作性，可以提供一个原始的 JSON Schema，将原始响应与解析后的表示一起返回，可在调用 `with_structured_ouput` 时设置 `include_raw=True` 来实现
+
+```python
+import os
+
+from langchain.chat_models import init_chat_model
+
+llm = init_chat_model(
+    model="qwen3-vl-flash-2025-10-15",
+    model_provider="openai",
+    base_url=os.getenv("DASHSCOPE_BASE_URL"),
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+)
+
+schema = {
+    "name": "animal_list",
+    "schema": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "animal": {"type": "string", "description": "动物名称"},
+                "emoji": {"type": "string", "description": "动物emoji表情"},
+            },
+            "required": ["animal", "emoji"],
+        }
+    }
+}
+
+messages = [
+    {
+        "role": "user",
+        "content": "任意生成三种动物，以及它们的 emoji 表情",
+    }
+]
+
+llm_with_structured_output = llm.with_structured_output(
+    schema=schema,
+    include_raw=True,
+    method="json_schema"
+)
+
+if __name__ == "__main__":
+    resp = llm_with_structured_output.invoke(messages)
+    print(resp)
+    print(resp["raw"])
+    print(resp["parsed"])
+```
+
+
+
+
+
+
+
 
 
 
