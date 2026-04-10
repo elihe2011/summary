@@ -1047,9 +1047,138 @@ if __name__ == "__main__":
 
 
 
+# 6. agent 和 chain
+
+本质区别：
+
+👉 **Chain = 固定流程（你写死）**
+👉 **Agent = 动态决策（模型决定）**
+
+
+
+## 核心对比
+
+| 维度         | Chain  | Agent         |
+| ------------ | ------ | ------------- |
+| 流程         | 固定   | 动态          |
+| 控制权       | 开发者 | LLM           |
+| 是否能选工具 | ❌ 不会 | ✅ 会          |
+| 是否有“思考” | ❌ 没有 | ✅ 有（ReAct） |
+| 可预测性     | ✅ 高   | ❌ 相对低      |
+| 灵活性       | ❌ 低   | ✅ 高          |
+
+
+
+## 三、Chain 是什么？
+
+👉 本质：**Runnable Pipeline（流水线）**
+
+你明确规定每一步：
+
+```
+input → prompt → llm → parser → output
+```
+
+### 示例（LCEL）
+
+```
+from langchain_core.runnables import RunnableLambda
+
+chain = (
+    RunnableLambda(lambda x: x + " world")
+)
+
+chain.invoke("hello")
+```
+
+👉 特点：
+
+- 每一步你都写死
+- 不会“自己决定”
+- 不会调用工具（除非你硬编码）
+
+------
+
+## 四、Agent 是什么？
+
+👉 本质：**带决策能力的 Chain（LLM + Tools + Reasoning）**
+
+典型流程（ReAct）：
+
+```
+用户问题
+  ↓
+LLM 思考（Thought）
+  ↓
+是否需要工具？
+  ↓
+调用 Tool
+  ↓
+拿到结果（Observation）
+  ↓
+继续思考
+  ↓
+最终回答
+```
+
+------
+
+### 示例（Agent）
+
+```
+from langchain.agents import create_agent
+
+agent = create_agent(
+    model=llm,
+    tools=[get_time]
+)
+
+agent.invoke({
+    "messages": [{"role": "user", "content": "现在几点"}]
+})
+```
+
+👉 这里关键点：
+
+- LLM 自己决定：
+  - 要不要调用 `get_time`
+  - 调用几次
+  - 何时结束
 
 
 
 
 
+## 六、什么时候用 Chain？
 
+👉 满足这些就用 Chain：
+
+- 流程固定（ETL / pipeline）
+- 不需要工具选择
+- 要求稳定、可控
+- Structured Output（JSON）
+
+典型：
+
+- 日志解析（你之前在做）
+- Prometheus 指标处理
+- 数据清洗
+- 固定 Prompt 生成
+
+------
+
+## 七、什么时候用 Agent？
+
+👉 满足这些就用 Agent：
+
+- 问题不确定
+- 需要调用工具
+- 需要推理（multi-step）
+- 用户输入开放
+
+典型：
+
+- ChatGPT 类应用
+- Copilot
+- 数据查询助手（SQL / API）
+- 自动化运维助手（很适合你）

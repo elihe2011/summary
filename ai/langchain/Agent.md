@@ -20,6 +20,15 @@ Agent = LLM + Memory + Tools + Planning + Action
 
 
 
+**AI Agent 的核心能力**：推理 :arrow_right: 执行 :arrow_right: 反馈，它具备如下能力：
+
+- **状态记忆**：记住对话上下文和任务进度
+- **工具调用**：能使用计算器、API、数据库等外部工具
+- **主动决策**：根据情况决定下一步做什么
+- **多步骤执行**：分解复杂任务并逐步完成
+
+
+
 # 2. Tool
 
 工具封装了一个可调用函数及其输入模式。这些参数可以传递给兼容的聊天模型，从而允许模型决定是否调用工具及调用哪些参数。在这种情况下，工具调用使用模型能生成符合直到输入模式的请求
@@ -220,6 +229,223 @@ if __name__ == "__main__":
             }
     ):
         print(chunk, end="\n\n")
+```
+
+
+
+**三种核心 stream_mode**:
+
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/langchain/agent_stream_mode.png)
+
+
+
+### 3.2.1 `"updates"` — Agent 步骤进度流
+
+每次 agent 执行完一个节点（step）后，就推送一次该节点的状态变化。 [Langchain](https://docs.langchain.com/oss/python/langchain/streaming/overview)例如一次工具调用的完整流程会依次推出三个 chunk：LLM 节点（含 tool_call 请求）→ Tool 节点（执行结果）→ LLM 节点（最终回复）。
+
+**数据结构**：
+
+```python
+{
+  "type": "updates",
+  "data": {
+    "model": {"messages": [AIMessage(...)]},
+    "tools": {"messages": [ToolMessage(...)]}
+  }
+}
+```
+
+**适合**：调试面板、进度指示器、需要追踪每个步骤结果的后台日志系统。
+
+示例：
+
+```python
+# stream_mode="updates" 过程事件，按模型、工具等分不同的事件消息
+def stream_chat_updates(agent, session_id: str, message: str):
+    config = {"configurable": {"session_id": session_id}}
+
+    for chunk in agent.stream(
+        {"messages": [HumanMessage(content=message)],},
+        config=config,
+        stream_mode="updates",
+    ):
+        print(chunk)
+
+        for node in chunk.values():
+            if "messages" not in node:
+                continue
+
+            for msg in node["messages"]:
+                # tool call
+                if isinstance(msg, AIMessage) and msg.tool_calls:
+                    yield (
+                        "event: tool_call\n"
+                        f"data: {json.dumps(msg.tool_calls)}\n\n"
+                    )
+
+                # tool result
+                elif isinstance(msg, ToolMessage):
+                    yield (
+                        "event: tool_result\n"
+                        f"data: {msg.content}\n\n"
+                    )
+
+                # normal output
+                elif isinstance(msg, AIMessage) and msg.content:
+                    yield (
+                        "event: final_result\n"
+                        f"data: {msg.content}\n\n"
+                    )
+```
+
+
+
+### 3.2.2 `"messages"` — LLM Token 实时流
+
+使用 `stream_mode="messages"` 会流式输出所有 LLM 调用产生的 `(token, metadata)` 元组，包括增量的 tool call 构建过程。 [Langchain](https://docs.langchain.com/oss/python/langchain/streaming/overview)
+
+**数据结构**：
+
+```python
+# chunk 是一个 (AIMessageChunk, metadata) 元组
+token, metadata = chunk
+token.content          # 文本内容片段
+token.tool_call_chunks # 正在构建的工具调用片段
+```
+
+**适合**：聊天 UI 中的"打字机"效果、需要最低延迟展示回复的场景、需要实时渲染 reasoning tokens 的深度思考模型。
+
+示例：
+
+```python
+# stream_mode="messages"
+# 👉 只会流出 AI 的“生成过程”（token / chunk）
+# ❌ 不会包含：HumanMessage、ToolMessage、完整 AIMessage
+def stream_chat_messages(agent, session_id: str, message: str):
+    config = {"configurable": {"session_id": session_id}}
+
+    for token, metadata in agent.stream(
+        {"messages": [HumanMessage(content=message)],},
+        config=config,
+        stream_mode="messages",
+    ):
+        yield token.content + "\n\n"
+```
+
+
+
+### 3.2.3 `"values"` —  获取完整状态
+
+**SSE / 流式接口（推荐）:**
+
+```python
+seen_len = 0
+for chunk in agent.stream(..., stream_mode="values"):
+    messages = chunk["messages"]
+    new_messages = messages[seen_len:] # 提取新消息
+    seen_len = len(messages)
+    for msg in new_messages:
+        print(msg.content) # 仅处理新内容
+```
+
+
+
+每个步骤后流式传输状态的完整快照  完整的 state 对象，包含 `messages` 等所有字段
+
+```python
+## stream_mode="values" 下，chunk["messages"] 是“逐步递增的完整对话状态（state snapshot）”
+def stream_chat_values(agent, session_id: str, message: str):
+    config = {"configurable": {"session_id": session_id}}
+
+    for chunk in agent.stream(
+        {"messages": [HumanMessage(content=message)],},
+        config=config,
+        stream_mode="values",
+    ):
+        print(chunk)
+        #
+        msg = chunk["messages"][-1]
+        # tool call
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            yield (
+                "event: tool_call\n"
+                f"data: {json.dumps(msg.tool_calls)}\n\n"
+            )
+
+        # tool result
+        elif isinstance(msg, ToolMessage):
+            yield (
+                "event: tool_result\n"
+                f"data: {msg.content}\n\n"
+            )
+
+        # normal output
+        elif isinstance(msg, AIMessage) and msg.content:
+            yield (
+                "event: final_result\n"
+                f"data: {msg.content}\n\n"
+            )
+```
+
+
+
+### 3.2.4 `"custom"` — 自定义进度信号
+
+在工具函数内部调用 `get_stream_writer()` 返回的 `writer`，可以向流中写入任意自定义数据。 [Langchain](https://docs.langchain.com/oss/python/langchain/streaming/overview)
+
+**数据结构**：
+
+```python
+# 在工具函数内部
+from langgraph.config import get_stream_writer
+writer = get_stream_writer()
+writer("已获取第 10/100 条记录")  # 任意 Python 对象
+
+# 消费侧
+{"type": "custom", "data": "已获取第 10/100 条记录"}
+```
+
+**适合**：工具内部进度上报（如批量 API 调用进度）、多步任务的心跳消息、不想改 state 结构却想向前端传信号的场景。
+
+示例：
+
+```python
+from langgraph.config import get_stream_writer
+
+def slow_tool(query: str) -> str:
+    """模拟耗时操作的工具"""
+    writer = get_stream_writer()
+    
+    writer(f"🔍 正在搜索：{query}")
+    # 模拟搜索...
+    writer("📊 找到 10 条相关结果")
+    # 处理结果...
+    writer("✅ 处理完成")
+    
+    return "这是最终结果"
+
+# 使用 custom 模式接收工具发送的自定义消息
+for custom_msg in agent.stream(
+    {"messages": [{"role": "user", "content": "搜索 AI 新闻"}]},
+    stream_mode="custom"
+):
+    print(custom_msg)  # 输出: 🔍 正在搜索... / 📊 找到... / ✅ 处理完成
+```
+
+
+
+### 3.2.5 组合使用
+
+可以把多个模式以列表形式传入，流中会混合来自不同模式的 chunk，通过 `chunk["type"]` 字段区分来源。 [Langchain](https://docs.langchain.com/oss/python/langchain/streaming/overview)
+
+```python
+for chunk in agent.stream(input, stream_mode=["updates", "messages", "custom"]):
+    if chunk["type"] == "updates":
+        ...   # 步骤完成
+    elif chunk["type"] == "messages":
+        ...   # token 流
+    elif chunk["type"] == "custom":
+        ...   # 自定义信号
 ```
 
 
