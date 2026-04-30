@@ -299,3 +299,12 @@ Python 线程错误：
 | `seccomp=unconfined` 修复            | —                      | 确认根因 ✅                 |
 
 **升级 Docker ≥ 20.10.10 或使用自定义 seccomp profile 加入 `clone3`，两个报错会同时消失。**
+
+
+
+```
+docker run -it --rm --security-opt seccomp=unconfined
+```
+
+
+

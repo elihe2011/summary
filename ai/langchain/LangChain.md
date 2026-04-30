@@ -2352,9 +2352,1354 @@ print(history.messages)
 
 
 
-# 6. 补充
+# 6. 运行时数据注入
 
-## 6.1 LangSmith
+通过 Context 和 Runtime 运行时数据注入。本质上解决如何让工具“感知”运行时的上下文，同时又不把这些内容细节暴露给大模型
+
+
+
+## 6.1 Runtime
+
+`ToolRuntime` 为工具提供了六大核心能力：
+
+| 组件              | 作用域       | 典型用途                          | 类比                   |
+| ----------------- | ------------ | --------------------------------- | ---------------------- |
+| State         | 当前对话     | 访问消息历史、计数器、临时标记    | 工作台（当前任务相关） |
+| Context       | 单次运行     | 用户ID、权限、数据库连接、API密钥 | 工牌（身份认证信息）   |
+| Store         | 跨会话持久化 | 用户偏好、长期记忆、知识库        | 档案柜（历史记录）     |
+| Stream Writer | 实时流       | 进度反馈、中间状态推送            | 对讲机（实时通讯）     |
+| Config     | 运行配置     | 回调函数、标签、元数据            | 配置手册               |
+| Tool Call ID  | 单次调用     | 日志追踪、调用链关联              | 工单号                 |
+
+```python
+from dataclasses import dataclass
+
+from langchain_core.tools import tool
+from langgraph.prebuilt import ToolRuntime
+
+@dataclass
+class Context:
+    user_id: str
+    user_role: str  # admin | user | guest
+
+@tool
+def fetch_user_data(query: str, runtime: ToolRuntime[Context]) -> str:
+    """
+    根据查询获取用户数据，自动进行权限检查。
+
+    Args:
+      - query: 用户查询内容
+    """
+    # 1. 从 Context 获取身份信息
+    user_id = runtime.context.user_id
+    user_role = runtime.context.user_role
+
+    # 2. 从 State 读取对话历史 (检查是否有敏感数据操作前置)
+    messages = runtime.state.get("messages", [])
+
+    # 3. 从 Store 获取用户长期偏好
+    if runtime.store:
+        prefs = runtime.store.get(("user_prefs",), user_id)
+
+    # 4. 实时推送进度
+    runtime.stream_writer(f"🔍 正在为用户 {user_id} 查询数据...")
+
+    # 5. 权限检查 (敏感信息隔离示例)
+    if "salary" in query.lower() and user_role != "admin":
+        return "❌ 权限不足：薪资信息仅限管理员查询"
+
+    return f"查询结果 for {user_id}: ..."
+```
+
+
+
+## 6.2 Context Schema
+
+在旧版中，传递额外数据需要通过 `config["configurable"]` 实现。新版的 `context_schema` 让一切变得**显示、类型安全、可维护**。
+
+通过 `context_schema`，将获得：
+
+- **类型安全**：IDE 自动补全和静态检查
+- **安全隔离**：敏感信息对 LLM 完全不可见
+- **可测试性**：可以 Mock Context 进行单元测试
+- **可维护性**：数据流向清晰，不依赖"魔法"配置
+
+**⚠️ 注意**：当使用 LangGraph 时，无法直接通过 `.invoke()` 注入 context。此时需要在 graph 启动时初始化资源，或通过 `configurable` 传递配置 。
+
+
+
+### 6.2.1 基础用法 Dataclass
+
+通过 `agent.invoke(context=XXX)` 注入，然后在 tool 中通过 `runtime.context` 访问
+
+```python
+from dataclasses import dataclass
+
+from langchain.agents import create_agent
+
+@dataclass
+class AppContext:
+    user_id: str
+    tenant_id: str       # 多租户隔离
+    request_id: str      # 日志追踪
+    feature_flags: dict  # 功能开关
+
+agent = create_agent(
+    model="gpt-4o",
+    tools=[fetch_user_data, update_settings],
+    context_schema=AppContext,   # 声明上下文结构
+)
+
+# 调用时注入
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "查看我的数据"}]},
+    context=AppContext(
+        user_id="user",
+        tenant_id="tenant",
+        request_id="request_id",
+        feature_flags={"beta_feature": True},
+    )
+)
+```
+
+
+
+### 6.2.2 进阶 Pydantic 与验证
+
+对于更复杂的场景，Pydantic 提供了更强的验证能力
+
+```python
+from datetime import datetime
+
+from langchain_core.tools import tool
+from langgraph.prebuilt import ToolRuntime
+from pydantic import BaseModel, Field, field_validator
+
+
+class SecureContext(BaseModel):
+    user_id: str = Field(..., min_length=5)
+    permissions: list[str] = Field(default_factory=list)
+    session_start: datetime = Field(default_factory=datetime.now)
+
+    @field_validator('permissions')
+    def validate_permissions(cls, v):
+        allowed = {"read", "write", "delete", "admin"}
+        invalid = set(v) - allowed
+        if invalid:
+            raise ValueError(f"无效权限: {invalid}")
+        return v
+
+# 在工具中使用
+@tool
+def delete_resource(resource_id: str, runtime: ToolRuntime[SecureContext]) -> str:
+    """删除资源，需要 delete 或 admin 权限"""
+    if "delete" not in runtime.context.permissions \
+            and "admin" not in runtime.context.permissions:
+        raise PermissionError("权限不足")
+    # 执行删除...
+    return "成功"
+```
+
+
+
+## 6.3 用户身份与权限传递
+
+核心诉求：不同用户看到不同数据
+
+
+
+### 6.3.1 基于角色的数据过滤 RBAC
+
+```python
+from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+
+from langchain_core.tools import tool
+from langgraph.prebuilt import ToolRuntime
+
+
+class Role(Enum):
+    USER = "user"
+    ADMIN = "admin"
+    MANAGER = "manager"
+
+@dataclass
+class AuthContext:
+    user_id: str
+    role: Role
+    department: str | None = None
+
+@tool
+def query_sales_data(quarter: str, runtime: ToolRuntime[AuthContext]) -> str:
+    """查询销售数据，自动根据角色过滤可见范围"""
+    ctx = runtime.context
+
+    # 权限矩阵
+    if ctx.role == Role.ADMIN:
+        data = fetch_all_sales(quarter)
+    elif ctx.role == Role.MANAGER:
+        data = fetch_department_sales(quarter, ctx.department)
+    else:
+        data = fetch_personal_sales(quarter, ctx.user_id)
+
+    # 审计日志 (写入Store)
+    if runtime.store:
+        runtime.store.put(
+            ("audit",),
+            f"{ctx.user_id}_{datetime.now().isoformat()}",
+            {"action": "query_sales", "quarter": quarter, "role": ctx.role.value},
+        )
+
+    return format_sales_report(data)
+```
+
+
+
+### 6.3.2 多租户隔离
+
+```python
+import json
+from dataclasses import dataclass
+
+from langchain_core.tools import tool
+from langgraph.prebuilt import ToolRuntime
+
+
+@dataclass
+class TenantContext:
+    tenant_id: str
+    user_id: str
+    db_pool: AsyncConnectionPool
+
+@tool
+async def get_customer_list(
+    filter_status: str | None,
+    runtime: ToolRuntime[TenantContext],
+) -> str:
+    """获取客户列表，自动隔离租户数据"""
+    tenant_id = runtime.context.tenant_id
+    pool = runtime.context.db_pool
+
+    # SQL 自动注入 tenant_id 过滤
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM customers WHERE tenant_id = $1 AND ($2::text IS NULL OR status = $2)",
+            tenant_id, filter_status
+        )
+
+    return json.dumps([dict(r) for r in rows])
+```
+
+
+
+## 6.4 敏感信息隔离
+
+**安全原则 checklist:**
+
+✅ **Context 中的敏感信息**：API密钥、数据库连接、加密密钥
+✅ **State 中的会话信息**：认证状态、临时token、上传文件
+✅ **Store 中的持久化数据**：用户密码哈希、隐私设置
+❌ **绝不暴露给 LLM**：通过 `context_schema` 定义的数据不会出现在工具的 JSON Schema 中
+
+
+
+示例：安全的支付工具
+
+```python
+import datetime
+from dataclasses import dataclass
+from decimal import Decimal
+from typing import Annotated
+
+from langchain_core.tools import tool, InjectedToolCallId
+from langgraph.prebuilt import ToolRuntime
+
+@dataclass
+class PaymentContext:
+    user_id: str
+    stripe_api_key: str
+    fraud_check_endpoint: str
+    max_transaction_amount: Decimal
+
+@tool
+def process_payment(
+        amount: Decimal,
+        currency: str,
+        runtime: ToolRuntime[PaymentContext],
+        tool_call_id: Annotated[str, InjectedToolCallId],
+) -> str:
+    """
+    处理支付请求，包含风险检查
+
+    Args:
+        amount: 支付金额 (如 18.80)
+        currency: 货币代码 (如 USD，CNY)
+    """
+    ctx = runtime.context
+
+    # 1. 风险检查
+    risk_score = check_fraud(
+        ctx.fraud_check_endpoint,
+        ctx.user_id,
+        amount,
+        currency,
+    )
+
+    if risk_score > 0.8:
+        # 记录到长期记忆
+        if runtime.store:
+            runtime.store.put(
+                ("security",),
+                ctx.user_id,
+                {"last_blocked": datetime.now().isoformat(), "reason": "high_risk"},
+            )
+        return "⚠️ 交易被风控系统拦截，请联系客服"
+
+    # 2. 限额检查
+    if amount > ctx.max_transaction_amount:
+        return f"❌ 超出单笔限额 {ctx.max_transaction_amount}"
+
+    # 3. 实时通知用户进度
+    runtime.stream_writer("🔒 正在连接支付网关...")
+
+    # 4. 执行支付
+    result = stripe_charge(
+        api_key=ctx.stripe_api_key,
+        amount=amount,
+        currency=currency,
+        metadata={"user_id": ctx.user_id, "tool_call_id": tool_call_id},
+    )
+
+    runtime.stream_writer("✅ 支付处理完成")
+    return f"交易成功，ID: {result.id}"
+```
+
+
+
+## 6.5 Stream Writer
+
+长耗时工具 (如数据分析、文件处理) 最大的用户体验杀手是 **“假死”** 状态。`runtime.stream_writer` 可以在工具执行过长中推送实时更新：
+
+```python
+@tool
+def analyze_large_dataset(dataset_id: str, analysis_type: str, runtime: ToolRuntime) -> str:
+    """分析大型数据集，实时报告进度。"""
+    writer = runtime.stream_writer
+
+    writer({"type": "status", "message": "📥 正在加载数据集..."})
+    df = load_dataset(dataset_id)
+
+    writer({"type": "progress", "percent": 20, "message": "🔍 数据清洗中..."})
+    df_clean = clean_data(df)
+
+    writer({"type": "progress", "percent": 50, "message": "🧮 执行统计分析..."})
+    stats = compute_statistics(df_clean)
+
+    writer({"type": "progress", "percent": 80, "message": "📊 生成可视化..."})
+    charts = generate_charts(stats)
+
+    writer({"type": "complete", "message": "✅ 分析完成！"})
+
+    return format_report(stats, charts)
+```
+
+前端配合：
+
+```js
+// 使用 LangChain 的 useStream hook
+const { stream } = useStream();
+
+stream.subscribe((chunk) => {
+  if (chunk.type === 'progress') {
+    updateProgressBar(chunk.percent);
+    showStatus(chunk.message);
+  }
+});
+```
+
+
+
+## 6.6 企业级 Agent 架构
+
+```python
+import os
+from dataclasses import dataclass
+from datetime import datetime
+
+from langchain.agents import AgentState, create_agent
+from langchain.agents.middleware import before_model
+from langchain_core.tools import tool
+from langgraph.prebuilt import ToolRuntime
+from langgraph.runtime import Runtime
+from langgraph.store.memory import InMemoryStore
+
+
+# ============ 1. 上下文定义 ============
+@dataclass
+class CustomerServiceContext:
+    agent_id: str               # 客服工号
+    user_tier: str              # vip | premium | standard
+    session_id: str             # 会话ID，用于链路追踪
+    crm_api_token: str          # CRM系统密钥
+    knowledge_base_version: str
+
+# ============ 2. 中间件：动态权限提示 ============
+@before_model
+def inject_privacy_warning(state: AgentState, runtime: Runtime[CustomerServiceContext]) -> dict:
+    """在模型调用前注入数据隐私提醒"""
+    if runtime.context.user_tier == "vip":
+        return {
+            "messages": [{
+                "role": "system",
+                "content": "⚠️ 当前用户为VIP，注意保护隐私数据，不得透露其他客户信息"
+            }]
+        }
+    return {}
+
+# ============ 3. 工具实现 ============
+@tool
+def lookup_customer_history(customer_phone: str, runtime: ToolRuntime[CustomerServiceContext]) -> str:
+    """查询客户历史，自动根据等级决定详细程度"""
+    ctx = runtime.context
+
+    # 实时反馈
+    runtime.stream_writer(f"🔍 正在查询客户 {customer_phone[-4:]}...")
+
+    # 使用安全 token 调用 CRM
+    history = crm_client.query(
+        token=ctx.crm_api_token,
+        phone=customer_phone,
+    )
+
+    # VIP 客户看到完整历史，普通用户仅看摘要
+    if ctx.user_tier == "vip":
+        return format_detailed_history(history)
+    else:
+        return format_summary(history)
+
+@tool
+def escalate_to_human(reason: str, runtime: ToolRuntime[CustomerServiceContext]) -> str:
+    """升级至人工客服"""
+    ctx = runtime.context
+
+    # 写入长期记忆：标记该用户需要人工跟进
+    if runtime.store:
+        runtime.store.put(
+            ("escalation",),
+            ctx.session_id,
+            {
+                "agent_id": ctx.agent_id,
+                "reason": reason,
+                "timestamp": datetime.now().isoformat(),
+                "resolved": False,
+            }
+        )
+
+    # 通知监控系统
+    runtime.stream_writer({
+        "type": "alert",
+        "level": "high",
+        "message": f"工单升级: {reason}"
+    })
+
+    return "已为你转接人工客服，请稍等..."
+
+# ============ 4. 组装 Agent ============
+agent = create_agent(
+    model="deepseek-v3.1",
+    tools=[lookup_customer_history, escalate_to_human],
+    context_schema=CustomerServiceContext,
+    middleware=[inject_privacy_warning],
+    store=InMemoryStore(),
+)
+
+# ============ 5. 运行 ============
+response = agent.invoke(
+    {"messages": [{"role": "user", "content": "我要投诉昨天的订单"}]},
+    context=CustomerServiceContext(
+        agent_id="CS-1001",
+        user_tier="vip",
+        session_id="TK-20260430-099001",
+        crm_api_token=os.getenv("CRM_API_TOKEN"),
+        knowledge_base_version="v1.5"
+    )
+)
+```
+
+
+
+# 7. 中间件
+
+## 7.1 Middleware 架构
+
+LangChain 中间件设计了**六个生命周期钩子**，覆盖Agent执行的每个关键环节：
+
+| 钩子              | 执行时机              | 典型用途                             |
+| ----------------- | --------------------- | ------------------------------------ |
+| `before_agent`    | Agent启动时（一次）   | 加载记忆、验证输入、初始化资源       |
+| `before_model`    | 每次调用LLM前         | 修剪历史消息、注入上下文、PII脱敏    |
+| `wrap_model_call` | 包裹LLM调用全过程     | 缓存、重试、动态切换模型             |
+| `wrap_tool_call`  | 包裹工具执行全过程    | 工具权限校验、结果拦截、错误处理     |
+| `after_model`     | LLM返回后，工具执行前 | 输出校验、人工审批（HITL）、安全护栏 |
+| `after_agent`     | Agent结束时（一次）   | 保存结果、发送通知、清理资源         |
+
+这种设计的高明之处在于**"洋葱模型"**——每个`wrap_*`钩子都像一层洋葱皮，请求进去时要剥开层层包装，响应出来时又要再穿回去。这种双向拦截能力，让开发者能完全掌控数据流。
+
+
+
+## 7.2 创建 Middleware
+
+### 7.2.1 装饰器 (快速原型首选)
+
+适合单一功能轻量级场景，代码简洁
+
+```python
+from langchain.agents.middleware import before_model, wrap_model_call
+from langchain.agents import create_agent
+from typing import Callable
+
+# 像贴便利贴一样添加日志功能
+@before_model
+def log_before_model(state, runtime):
+    print(f"🤖 即将调用模型，当前消息数：{len(state['messages'])}")
+    return None  # 返回None表示不修改状态
+
+# 给模型调用加上"防弹衣"（重试机制）
+@wrap_model_call
+def retry_model(request, handler: Callable):
+    for attempt in range(3):
+        try:
+            return handler(request)
+        except Exception as e:
+            if attempt == 2:
+                raise
+            print(f"⚠️ 第{attempt + 1}次失败，正在重试：{e}")
+
+agent = create_agent(
+    model="gpt-4.1",
+    tools=[...],
+    middleware=[log_before_model, retry_model]  # 像搭积木一样组合
+)
+```
+
+**装饰器的本质**：LangChain会在背后动态创建一个继承自`AgentMiddleware`的类，把你的函数包装成对应的方法。简单，但功能相对有限。
+
+
+
+### 7.2.2 继承 `AgentMiddleware` 类
+
+当需要**多个钩子协同工作**、**同步/异步双版本**、或**复杂的初始化配置**时，类模式是不二之选：
+
+```python
+from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
+from typing import Callable, Any
+
+class ProductionGradeMiddleware(AgentMiddleware):
+    """
+    生产级中间件示例：日志 + 监控 + 熔断
+    """
+    def __init__(self, sentry_client, max_latency=30):
+        self.sentry = sentry_client
+        self.max_latency = max_latency
+        self.request_count = 0
+    
+    def before_agent(self, state, runtime) -> dict[str, Any] | None:
+        """Agent启动时：初始化追踪"""
+        self.request_count += 1
+        print(f"📊 第{self.request_count}次请求开始")
+        return {"trace_id": f"req_{self.request_count}"}
+    
+    def before_model(self, state, runtime) -> dict[str, Any] | None:
+        """调用前：检查消息长度，防止Token爆炸"""
+        msg_count = len(state["messages"])
+        if msg_count > 50:
+            # 触发消息摘要逻辑（可配合SummarizationMiddleware）
+            print(f"⚠️ 消息过多({msg_count})，建议清理历史")
+        return None
+    
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse]
+    ) -> ModelResponse:
+        """包裹调用：添加熔断和监控"""
+        import time
+        start = time.time()
+        
+        try:
+            response = handler(request)
+            latency = time.time() - start
+            
+            # 上报指标
+            if latency > self.max_latency:
+                print(f"🐌 慢查询警告：{latency:.2f}s")
+            
+            return response
+            
+        except Exception as e:
+            self.sentry.capture_exception(e)  # 上报错误
+            raise  # 继续抛出，让上层处理
+    
+    def after_model(self, state, runtime) -> dict[str, Any] | None:
+        """调用后：内容安全审查"""
+        last_message = state["messages"][-1]
+        content = last_message.content if hasattr(last_message, 'content') else str(last_message)
+        
+        # 简单的敏感词检查（实际可用更复杂的策略）
+        sensitive_words = ["密码", "密钥", "secret_key"]
+        for word in sensitive_words:
+            if word in content.lower():
+                print(f"🚨 检测到敏感信息：{word}")
+                # 可以在这里触发人工审核或拦截
+        return None
+    
+    def after_agent(self, state, runtime) -> dict[str, Any] | None:
+        """结束时：保存会话摘要"""
+        print(f"✅ 请求完成，共{len(state['messages'])}轮对话")
+        return None
+```
+
+
+
+## 7.3 状态预处理与响应后处理
+
+中间件的精髓在于**"偷梁换柱"**——在数据流动的关键节点，神不知鬼不觉地修改请求或响应。
+
+
+
+### 7.3.1 动态模型路由：给不同用户不同"大脑"
+
+示例：根据用户等级，为其分配不同的大模型
+
+```python
+from dataclasses import dataclass
+from langchain_openai import ChatOpenAI
+from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
+from typing import Callable
+
+@dataclass
+class UserContext:
+    tier: str = "free"  # free | pro | enterprise
+
+class SmartRouterMiddleware(AgentMiddleware):
+    """
+    智能路由中间件：根据用户等级分配模型
+    """
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse]
+    ) -> ModelResponse:
+        
+        user_tier = request.runtime.context.tier
+        
+        # 根据用户等级选择模型和工具
+        if user_tier == "enterprise":
+            model = ChatOpenAI(model="gpt-5", temperature=0.3)
+            tools = [advanced_analytics, sql_database, code_interpreter]
+            print("🏆 Enterprise用户：启用GPT-5 + 全套工具")
+            
+        elif user_tier == "pro":
+            model = ChatOpenAI(model="gpt-4.1", temperature=0.5)
+            tools = [web_search, file_reader]
+            print("💎 Pro用户：启用GPT-4.1")
+            
+        else:  # free
+            model = ChatOpenAI(model="gpt-4.1-nano", temperature=0.7)
+            tools = [basic_search]  # 限制工具数量
+            print("🆓 免费用户：基础版")
+        
+        # 关键：用request.override()创建新请求，原请求不变
+        new_request = request.override(model=model, tools=tools)
+        return handler(new_request)
+
+# 使用
+agent = create_agent(
+    model="gpt-4.1",  # 默认模型，会被中间件覆盖
+    tools=[advanced_analytics, sql_database, web_search, basic_search, code_interpreter, file_reader],
+    middleware=[SmartRouterMiddleware()],
+    context_schema=UserContext
+)
+
+# VIP用户使用
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "分析Q3销售数据"}]},
+    config={"configurable": {"context": UserContext(tier="enterprise")}}
+)
+```
+
+**关键点**：`request.override()`会创建一个新的请求对象，不会污染原始数据。这种不可变设计让多个中间件组合时更安全。
+
+
+
+### 7.3.2 动态工具选择：别让模型"选择困难症"
+
+当工具超过20个时，模型容易"看花眼"。我们可以在`wrap_model_call`中根据用户意图动态筛选工具：
+
+```python
+from langchain.agents.middleware import wrap_model_call
+
+@wrap_model_call
+def intent_based_tool_selector(request, handler):
+    """根据对话意图，只暴露相关工具"""
+    user_message = request.state["messages"][-1].content.lower()
+    
+    # 意图映射表
+    tool_categories = {
+        "coding": [code_executor, git_tool, linter],
+        "analysis": [data_analyzer, chart_generator, sql_query],
+        "search": [web_search, arxiv_search, wiki_lookup],
+        "writing": [grammar_checker, style_enhancer, translator]
+    }
+    
+    # 简单关键词匹配（实际可用Embedding或分类模型）
+    selected_tools = []
+    for intent, tools in tool_categories.items():
+        if intent in user_message:
+            selected_tools.extend(tools)
+    
+    # 保底：至少保留通用工具
+    if not selected_tools:
+        selected_tools = [web_search, calculator]
+    
+    print(f"🔧 根据意图激活{len(selected_tools)}个工具")
+    
+    return handler(request.override(tools=selected_tools))
+```
+
+
+
+## 7.4 生产级集成：日志、监控、安全护栏
+
+### 7.4.1 全链路日志中间件
+
+```python
+import json
+import time
+from typing import Any
+from langchain.agents.middleware import AgentMiddleware
+
+class ObservabilityMiddleware(AgentMiddleware):
+    """
+    可观测性中间件：结构化日志 + 性能追踪
+    """
+    def __init__(self, logger):
+        self.logger = logger
+        self.start_times = {}
+    
+    def _log(self, event: str, data: dict):
+        self.logger.info(json.dumps({
+            "event": event,
+            "timestamp": time.time(),
+            **data
+        }))
+    
+    def before_agent(self, state, runtime) -> None:
+        self.start_times["agent"] = time.time()
+        self._log("agent_started", {
+            "thread_id": runtime.config.get("thread_id"),
+            "message_count": len(state["messages"])
+        })
+    
+    def wrap_model_call(self, request, handler):
+        call_start = time.time()
+        model_name = request.model.model_name if hasattr(request.model, 'model_name') else 'unknown'
+        
+        self._log("model_call_started", {
+            "model": model_name,
+            "tool_count": len(request.tools)
+        })
+        
+        try:
+            response = handler(request)
+            latency = time.time() - call_start
+            
+            # 估算Token（实际应从response.usage获取）
+            self._log("model_call_completed", {
+                "model": model_name,
+                "latency_ms": round(latency * 1000, 2),
+                "status": "success"
+            })
+            return response
+            
+        except Exception as e:
+            self._log("model_call_failed", {
+                "model": model_name,
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+            raise
+    
+    def after_agent(self, state, runtime) -> None:
+        total_time = time.time() - self.start_times["agent"]
+        self._log("agent_completed", {
+            "total_duration_ms": round(total_time * 1000, 2),
+            "final_message_count": len(state["messages"])
+        })
+```
+
+
+
+### 7.4.2 敏感信息脱敏中间件
+
+```python
+import re
+from langchain.agents.middleware import AgentMiddleware
+
+class PIIMaskingMiddleware(AgentMiddleware):
+    """
+    PII脱敏中间件：保护用户隐私
+    """
+    PII_PATTERNS = {
+        "email": r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
+        "phone": r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',
+        "ssn": r'\b\d{3}-\d{2}-\d{4}\b',
+        "credit_card": r'\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b'
+    }
+    
+    def __init__(self):
+        self.mask_map = {}  # 占位符 -> 原始值
+        self.counter = 0
+    
+    def _mask(self, text: str) -> str:
+        """脱敏并记录映射关系"""
+        for pii_type, pattern in self.PII_PATTERNS.items():
+            matches = re.finditer(pattern, text)
+            for match in matches:
+                original = match.group()
+                placeholder = f"<{pii_type.upper()}_{self.counter}>"
+                self.counter += 1
+                self.mask_map[placeholder] = original
+                text = text.replace(original, placeholder)
+        return text
+    
+    def _unmask(self, text: str) -> str:
+        """还原敏感信息"""
+        for placeholder, original in self.mask_map.items():
+            text = text.replace(placeholder, original)
+        return text
+    
+    def before_model(self, state, runtime):
+        """请求前：脱敏"""
+        messages = state["messages"]
+        for msg in messages:
+            if hasattr(msg, 'content') and isinstance(msg.content, str):
+                msg.content = self._mask(msg.content)
+        return {"messages": messages}
+    
+    def after_model(self, state, runtime):
+        """响应后：还原（如果需要）"""
+        # 注意：通常LLM响应不需要包含PII，但以防万一
+        last_msg = state["messages"][-1]
+        if hasattr(last_msg, 'content') and isinstance(last_msg.content, str):
+            last_msg.content = self._unmask(last_msg.content)
+        return None
+```
+
+
+
+### 7.4.3 安全护栏（Guardrails）中间件
+
+防止Agent"胡说八道"或执行危险操作
+
+```python
+from langchain.agents.middleware import AgentMiddleware
+from langgraph.types import Command
+
+class SafetyGuardrailMiddleware(AgentMiddleware):
+    """
+    安全护栏：内容审核 + 危险操作拦截
+    """
+    FORBIDDEN_TOOLS = ["execute_shell", "delete_database", "send_email"]
+    DANGEROUS_KEYWORDS = ["rm -rf", "DROP TABLE", "DELETE FROM"]
+    
+    def wrap_tool_call(self, request, handler):
+        tool_name = request.tool_call.get("name", "")
+        
+        # 危险工具拦截
+        if tool_name in self.FORBIDDEN_TOOLS:
+            print(f"🚫 拦截危险工具调用：{tool_name}")
+            return {
+                "error": f"Tool '{tool_name}' is blocked by security policy",
+                "status": "blocked"
+            }
+        
+        # 参数检查
+        arguments = request.tool_call.get("arguments", {})
+        arg_str = json.dumps(arguments)
+        
+        for keyword in self.DANGEROUS_KEYWORDS:
+            if keyword in arg_str:
+                print(f"🚫 检测到危险参数：{keyword}")
+                return {
+                    "error": "Dangerous parameters detected",
+                    "status": "blocked"
+                }
+        
+        return handler(request)
+    
+    def after_model(self, state, runtime):
+        """输出审查"""
+        last_message = state["messages"][-1]
+        
+        # 检查模型是否试图执行未授权操作
+        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            for call in last_message.tool_calls:
+                if call.get("name") in self.FORBIDDEN_TOOLS:
+                    # 可以在这里触发人工审核
+                    return Command(update={
+                        "messages": [{
+                            "role": "assistant",
+                            "content": "我检测到您请求的操作涉及敏感功能，需要人工确认。请稍等..."
+                        }]
+                    })
+        return None
+```
+
+
+
+## 7.5 中间件组合
+
+LangChain按照数组顺序**从外到内**包裹中间件——想象成俄罗斯套娃：
+
+```python
+agent = create_agent(
+    model="gpt-4.1",
+    tools=[...],
+    middleware=[
+        ObservabilityMiddleware(logger),      # 最外层：监控一切
+        SafetyGuardrailMiddleware(),          # 第二层：安全检查
+        PIIMaskingMiddleware(),               # 第三层：隐私保护
+        SmartRouterMiddleware(),              # 第四层：智能路由
+        # 核心Agent逻辑在最内层
+    ]
+)
+```
+
+执行顺序：
+
+- **请求进入**：Observability → Safety → PII → Router → Agent
+
+- **响应返回**：Agent → Router → PII → Safety → Observability
+
+
+
+# 8. Human-in-the-Loop
+
+AI Agent 执行敏感操作时，**模型可能会误解意图，工具可能产生不可逆的后果**。在现实生产环境中，以下场景必须加"人工审批"这道保险：
+
+| 场景           | 风险等级 | 后果             |
+| :------------- | :------- | :--------------- |
+| 删除数据库记录 | 🔴 极高   | 数据永久丢失     |
+| 发送邮件给客户 | 🟠 高     | 错误信息损害品牌 |
+| 处理退款       | 🟠 高     | 资金损失         |
+| 修改配置文件   | 🟡 中     | 服务异常         |
+
+
+
+## 8.1 参数配置
+
+| 参数                 | 类型              | 说明                               |
+| :------------------- | :---------------- | :--------------------------------- |
+| `interrupt_on`       | Dict[str, Config] | 工具名到审批配置的映射             |
+| `True`               | bool              | 启用全部三种决策（批准/编辑/拒绝） |
+| `False`              | bool              | 自动批准，不中断                   |
+| `allowed_decisions`  | List[str]         | 自定义允许的决策类型               |
+| `description_prefix` | str               | 中断消息的标题前缀                 |
+
+```python
+from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
+from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
+
+@tool
+def delete_user_account(user_id: str) -> str:
+    """删除用户账号及其所有数据"""
+    return f"用户 {user_id} 已永久删除"
+
+@tool
+def send_promotion_email(email: str, content: str) -> str:
+    """想客户发送营销邮件"""
+    return f"邮件已发送至 {email}"
+
+# 创建 Agent，配置 HITL 中间件
+agent = create_agent(
+    model="gpt-4o",
+    tools=[delete_user_account, send_promotion_email],
+    middleware=[
+        HumanInTheLoopMiddleware(
+            interrupt_on={
+                "delete_user_account": True,   # 启用完整审批流程
+                "send_promotion_email": {
+                    "allowed_decisions": ["approve", "reject"],  # 不允许编辑
+                }
+            },
+            description_prefix="🔒 敏感操作待审批",
+        )
+    ],
+    checkpointer=InMemorySaver(),  # 必须启用，否则中断状态后将丢失
+)
+```
+
+
+
+## 8.2 工具执行审批流程
+
+当Agent尝试调用受保护的工具时，系统会抛出中断，等待人类决策。LangChain支持三种决策类型：
+
+**一、✅ Approve (直接批准)**：确认操作没问题，直接执行
+
+```python
+# 人类决定批准
+result = agent.invoke(
+    Command(resume={"decision": "approve"}),
+    config=config
+)
+# 工具正常执行，结果返回给Agent继续对话
+```
+
+
+
+**二、 ✏️ Edit (修改后执行)**：方向是对的，但细节需要调整
+
+```python
+# 人类修改参数后批准
+result = agent.invoke(
+    Command(resume={
+        "decision": "edit",
+        "edited_args": {
+            "email": "correct@example.com",  # 修正了邮箱地址
+            "content": "优化后的邮件内容..."# 修改了文案
+        }
+    }),
+    config=config
+)
+```
+
+
+
+**三、 ❌ Reject (拒绝并反馈)**：操作不合适，拒绝并告知原因
+
+```python
+# 人类拒绝并提供反馈
+result = agent.invoke(
+    Command(resume={
+        "decision": "reject",
+        "feedback": "客户明确要求不要发送营销邮件，请回复致歉"
+    }),
+    config=config
+)
+# 拒绝信息会作为观察返回给Agent，Agent据此调整策略
+```
+
+
+
+## 8.3 中断恢复与决策编辑
+
+### 8.3.1 完整 HITL 流程
+
+```python
+import os
+
+from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+
+
+# ============ 1. 工具定义 ============
+@tool
+def process_refund(order_id: str, amount: float, reason: str) -> str:
+    """处理客户退款请求"""
+    return f"✅ 退款成功：订单 {order_id} 已退款 ${amount}"
+
+@tool
+def escalate_to_human(ticket_id: str, reason: str) -> str:
+    """将复杂问题升级给人工客服"""
+    return f"📨 工单 {ticket_id} 已分配给人工处理"
+
+# ============ 2. 配置 HITL 中间件 ============
+llm = ChatOpenAI(
+    model="qwen3-max",
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+    base_url=os.environ["DASHSCOPE_BASE_URL"],
+    temperature=0,
+)
+
+agent = create_agent(
+    model=llm,
+    tools=[process_refund, escalate_to_human],
+    middleware=[
+        HumanInTheLoopMiddleware(
+            interrupt_on={
+                # 退款操作：允许编辑金额和原因
+                "process_refund": {
+                    "allowed_decisions": ["approve", "edit", "reject"],
+                    "description":"💰 退款审批 - 请核实金额与客户身份",
+                },
+                # 升级操作：直接批准或拒绝，无需编辑
+                "escalate_to_human": {
+                    "allowed_decisions": ["approve", "reject"],
+                }
+            }
+        )
+    ],
+    checkpointer=InMemorySaver(),
+    system_prompt="你是客服助手，可以处理退款或升级工单。处理超过$100的退款时必须谨慎。"
+)
+
+# ============ 3. 执行与中断处理 ============
+def run_customer_service():
+    config = {"configurable": {"thread_id": "customer-008-session-260430066"}}
+
+    # 客户请求
+    messages = [("user", "我要退掉昨天买的笔记本电脑，订单号TK-1022，全额退款$899")]
+
+    # 第一次调用 - 将在 process_refund 中断
+    result = agent.invoke({"messages": messages}, config=config)
+
+    # 检查中断是否发送
+    while result.get("__interrupt__"):
+        interrupts = result["__interrupt__"]
+
+        for interrupt in interrupts:
+            print(interrupt)
+            action_request = interrupt.value["action_requests"][0]
+            config_review = interrupt.value["review_configs"][0]
+
+            print(f"\n🔔 操作待审批：{action_request['name']}")
+            print(f"  参数：{action_request['args']}")
+            print(f"  允许决策：{config_review['allowed_decisions']}")
+
+            # 模拟人工审批界面
+            print("\n请选择：")
+            can_approve = False
+            if "approve" in config_review["allowed_decisions"]:
+                print("1: 批准 (approve)")
+                can_approve = True
+
+            can_edit = False
+            if "edit" in config_review["allowed_decisions"]:
+                print("2: 编辑 (edit)")
+                can_edit = True
+
+            can_reject = False
+            if "reject" in config_review["allowed_decisions"]:
+                print("3: 拒绝 (reject)")
+                can_reject = True
+
+            choice = input("输入选项 (1/2/3)：")
+            if choice == "1" and can_approve:
+                resume_value =  {"decisions": [{"type": "approve"}]}
+            elif choice == "2" and can_edit:
+                # 编辑模式：修改退款金额
+                new_amount = float(input("请输入修正后的金额："))
+                resume_value = {
+                    "decisions": [{
+                        "type": "edit",
+                        "edited_action": {
+                            "name": action_request["name"],
+                            "args": {
+                                "order_id": action_request["args"]["order_id"],
+                                "amount": new_amount,
+                                "reason": action_request["args"]["reason"],
+                            }
+                        }
+                    }]
+                }
+            elif choice == "3" and can_reject:
+                feedback = input("输入拒绝原因：")
+                resume_value =  {
+                    "decisions": [{"type": "reject", "feedback": feedback}]
+                }
+            else:
+                print(f"错误的选择：{choice}")
+                break
+
+            # 使用 Command.resume 恢复执行
+            result = agent.invoke(
+                Command(resume=resume_value),
+                config=config,
+            )
+
+    # 获取最终响应
+    final_response = result["messages"][-1].content
+    print(f"\n🤖 Agent回复: {final_response}")
+
+if __name__ == "__main__":
+    run_customer_service()
+```
+
+
+
+### 8.3.2 中断恢复的核心机制
+
+**关键概念：**
+
+- **Checkpointer 必需**：没有它，中断后状态会丢失，就像电脑突然断电没保存文档
+
+- **节点会重新执行**：恢复时从节点开头重新运行，不是从中断点继续
+
+- **Command.resume携带决策**：人类的选择通过`Command(resume=...)`传递回去
+
+```python
+# langchain/agents/middleware/human_in_the_loop.py
+# ...
+class HumanInTheLoopMiddleware(AgentMiddleware[StateT, ContextT, ResponseT]):
+    # ...
+	@staticmethod
+    def _process_decision(
+        decision: Decision,
+        tool_call: ToolCall,
+        config: InterruptOnConfig,
+    ) -> tuple[ToolCall | None, ToolMessage | None]:
+        """Process a single decision and return the revised tool call and optional tool message."""
+        allowed_decisions = config["allowed_decisions"]
+
+        if decision["type"] == "approve" and "approve" in allowed_decisions:
+            return tool_call, None
+        if decision["type"] == "edit" and "edit" in allowed_decisions:
+            edited_action = decision["edited_action"]
+            return (
+                ToolCall(
+                    type="tool_call",
+                    name=edited_action["name"],
+                    args=edited_action["args"],
+                    id=tool_call["id"],
+                ),
+                None,
+            )
+        if decision["type"] == "reject" and "reject" in allowed_decisions:
+            # Create a tool message with the human's text response
+            content = decision.get("message") or (
+                f"User rejected the tool call for `{tool_call['name']}` with id {tool_call['id']}"
+            )
+            tool_message = ToolMessage(
+                content=content,
+                name=tool_call["name"],
+                tool_call_id=tool_call["id"],
+                status="error",
+            )
+            return tool_call, tool_message
+        msg = (
+            f"Unexpected human decision: {decision}. "
+            f"Decision type '{decision.get('type')}' "
+            f"is not allowed for tool '{tool_call['name']}'. "
+            f"Expected one of {allowed_decisions} based on the tool's configuration."
+        )
+        raise ValueError(msg)
+```
+
+
+
+## 8.4 生产环境安全控制
+
+### 8.4.1 持久化存储配置
+
+开发环境用`InMemorySaver`，生产环境必须换持久化存储：
+
+```python
+# 生产环境：PostgreSQL持久化
+from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg_pool import ConnectionPool
+
+# 创建连接池
+pool = ConnectionPool(
+    conninfo="postgresql://user:pass@localhost:5432/agent_db",
+    max_size=20
+)
+
+# 使用PostgresSaver持久化中断状态
+checkpointer = PostgresSaver(pool)
+checkpointer.setup()  # 创建必要的表结构
+
+agent = create_agent(
+    # ... 其他配置
+    checkpointer=checkpointer,  # 生产级持久化
+)
+```
+
+### 8.4.2 超时与降级策略
+
+```python
+import asyncio
+from datetime import timedelta
+
+class ProductionHITLConfig:
+    """生产环境HITL配置最佳实践"""
+    
+    # 1. 审批超时设置
+    APPROVAL_TIMEOUT = timedelta(minutes=30)
+    
+    # 2. 自动降级策略
+    AUTO_ESCALATION = True# 超时后自动升级给主管
+    
+    # 3. 审计日志
+    AUDIT_LOG = True# 记录所有审批决策
+    
+    # 4. 并发控制
+    MAX_PENDING_APPROVALS = 100# 防止审批队列堆积
+
+# 带超时的审批流程
+async def approve_with_timeout(agent, config, timeout=1800):
+    """带超时的审批等待"""
+    try:
+        result = await asyncio.wait_for(
+            wait_for_approval(agent, config),
+            timeout=timeout
+        )
+        return result
+    except asyncio.TimeoutError:
+        # 超时处理：自动拒绝或升级
+        return handle_approval_timeout(config)
+```
+
+### 8.4.3 权限与身份隔离
+```python
+from typing import TypedDict, Annotated
+
+class UserContext(TypedDict):
+    """用户上下文Schema"""
+    user_id: str
+    role: str# "customer_service", "supervisor", "admin"
+    approval_limit: float# 最大可审批金额
+
+# 在工具运行时访问用户上下文
+@tool
+def process_high_value_refund(
+    order_id: str, 
+    amount: float,
+    runtime: ToolRuntime  # 注入运行时上下文
+) -> str:
+    """处理高价值退款，需要主管权限"""
+    
+    user = runtime.context["user"]
+    
+    # 权限检查
+    if user["role"] != "supervisor" and amount > 1000:
+        return "❌ 拒绝：金额超过您的审批权限，需要主管批准"
+    
+    if amount > user["approval_limit"]:
+        return f"❌ 拒绝：金额 ${amount} 超过您的限额 ${user['approval_limit']}"
+    
+    return f"✅ 退款已处理：订单 {order_id} 退款 ${amount}"
+
+# 配置context_schema传递用户信息
+agent = create_agent(
+    # ...
+    context_schema=UserContext,
+)
+```
+
+
+
+# Z. 附录
+
+## Z.1 LangSmith
 
 使用 LangChain 构建的许多应用程序都包含多个步骤，需要多次调用 LLM。随着这些应用程序变得越来越复杂，能够检查链或 Agent 内部的具体情况变得至关重要，最好的办法是使用 LangSmith
 
@@ -2371,7 +3716,7 @@ LangSmith 默认将跟踪记录到 default 项目，可通过 LANGSMITH_PROJECT 
 
 
 
-## 6.2 提示词
+## Z.2 提示词
 
 ```python
 # 定义摘要提示词模板
@@ -2415,7 +3760,7 @@ total_summary_prompt = PromptTemplate(
 
 
 
-## 6.3 多 Agent 架构
+## Z.3 多 Agent 架构
 
 监督者模式是一种多 Agent 架构，其中主管 Agent 负责协调各专业工具 Agent。当任务需要不同类型的专业知识时，这个方法非常有效。与其构建一个管理跨领域工具选择的 Agent，不如创建由了解整体工作流程的主管协调的、专注的专家。
 
