@@ -22,34 +22,42 @@ class Response(GenericModel, Generic[T]):
 
 ```python
 # core/exception.py
-# 自定义业务异常
-class BusinessException(Exception):
-    def __init__(self, code: int = 4001, message: str = "业务异常"):
-        self.code = code
-        self.message = message
+import logging
 
-# 注册异常处理器        
+from fastapi import FastAPI
+from fastapi.requests import Request
+from starlette.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
+
+
+class BusinessException(Exception):
+    def __init__(self, code: int = 1001, message: str = "业务异常"):
+        self.code = code
+        self.message = message
+
 def register_exceptions(app: FastAPI):
-    @app.exception_handler(BusinessException)
-    async def business_handler(request: Request, exc: BusinessException):
-        return JSONResponse(
-            status_code=200,
-            content={"code": exc.code, "message": exc.message, "data": None}
-        )
+    @app.exception_handler(BusinessException)
+    async def business_exception_handler(_: Request, exc: BusinessException):
+        return JSONResponse(
+            status_code=200,
+            content={"code": exc.code, "message": exc.message}
+        )
 
-    @app.exception_handler(Exception)
-    async def global_handler(request: Request, exc: Exception):
-        return JSONResponse(
-            status_code=500,
-            content={"code": 5000, "message": "系统错误", "data": None}
-        )
+    @app.exception_handler(Exception)
+    async def global_exception_handler(_: Request, exc: Exception):
+        logger.error("Unhandled Exception", exc_info=exc)
+
+        return JSONResponse(
+            status_code=500,
+            content={"code": 5000, "message": "系统内部错误"}
+        )
 ```
 
 
 
 ```python
 # main.py
-
 app = FastAPI()
         
 # 注册异常处理
@@ -615,16 +623,16 @@ from utils.cache import preload_cache, clear_cache
 from utils.model_loader import load_model, unload_model
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 应用启动
-    await db_client.connect()
-    await preload_cache()
-    await load_model()
-    yield
-    # 应用关闭
-    await db_client.disconnect()
-    await clear_cache()
-    await unload_model()
+async def lifespan(app: FastAPI):
+    # 应用启动
+    await db_client.connect()
+    await preload_cache()
+    await load_model()
+    yield
+    # 应用关闭
+    await db_client.disconnect()
+    await clear_cache()
+    await unload_model()
 
 app = FastAPI(lifespan=lifespan)
 

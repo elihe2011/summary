@@ -1985,7 +1985,7 @@ chunk 是一个 `dict[str, list]`，结构如下，消息累积：
 
 
 
-### 3.5.4 custom (自定义进度信号)
+### 4.5.4 custom (自定义进度信号)
 
 在工具函数内部调用 `get_stream_writer()` 返回的 `writer`，可以向流中写入任意自定义数据。
 
@@ -2030,7 +2030,7 @@ for custom_msg in agent.stream(
 
 
 
-### 3.5.5 组合使用
+### 4.5.5 组合使用
 
 可以把多个模式以列表形式传入，流中会混合来自不同模式的 chunk，通过 `chunk["type"]` 字段区分来源。 [Langchain](https://docs.langchain.com/oss/python/langchain/streaming/overview)
 
@@ -2046,7 +2046,45 @@ for chunk in agent.stream(input, stream_mode=["updates", "messages", "custom"]):
 
 
 
-## 4.6 小结
+## 4.7 内置工具
+
+LangChain 提供支持的有以下几类工具：
+
+- **搜索工具**：用于在线搜索，包括 Bing、Google、DuckDuckGo 等搜索接口。返回内容一般包括：URL、标题、摘要等。
+- **代码辅助工具**：支持 Python、JavaScript 等语言的代码执行环境，可用于复杂计算或文件处理。
+- **生产力工具**：用于对接 Gmail、Office365、Slack、Jira 等办公/协作平台，实现任务自动化。
+- **网页浏览**：用于浏览网页、交互操作、信息抓取（如Hyperbrowser 等）。
+- **数据库**：支持与数据库交互，包括 SQL、Spark SQL 等数据库的读取与操作。
+- **其他常用工具**：维基百科、ArXiv、Python REPL
+
+由于网络的原因，大部分的内置工具用不了，只有一些特定的工具能够使用，包括论文查询工具 `arxiv`、计算器工具 `llm-math`、维基百科 `wikipedia` 以及执行 python 代码的 `python_repl` 。
+
+导入内置工具：
+
+```python3
+from langchain_community.agent_toolkits.load_tools import load_tools
+tools = load_tools(["arxiv"])
+```
+
+
+
+导入多个工具（部分依赖大模型）：
+
+```python
+tools = load_tools(["arxiv","llm-math", "wikipedia"], llm=llm)
+```
+
+
+
+导入操作具有一定危险性的工具，如在本地执行代码、读写文件等：
+
+```python
+tools = load_tools(["python_repl"], llm=llm, allow_dangerous_tools=True)
+```
+
+
+
+## 4.8 小结
 
 | 概念     | Chain（链）      | Agent（代理）        |
 | -------- | ---------------- | -------------------- |
@@ -2831,20 +2869,44 @@ response = agent.invoke(
 
 # 7. 中间件
 
-## 7.1 Middleware 架构
+## 7.1 实现机制
 
-LangChain 中间件设计了**六个生命周期钩子**，覆盖Agent执行的每个关键环节：
+### 7.1.1 插入点
 
-| 钩子              | 执行时机              | 典型用途                             |
-| ----------------- | --------------------- | ------------------------------------ |
-| `before_agent`    | Agent启动时（一次）   | 加载记忆、验证输入、初始化资源       |
-| `before_model`    | 每次调用LLM前         | 修剪历史消息、注入上下文、PII脱敏    |
-| `wrap_model_call` | 包裹LLM调用全过程     | 缓存、重试、动态切换模型             |
-| `wrap_tool_call`  | 包裹工具执行全过程    | 工具权限校验、结果拦截、错误处理     |
-| `after_model`     | LLM返回后，工具执行前 | 输出校验、人工审批（HITL）、安全护栏 |
-| `after_agent`     | Agent结束时（一次）   | 保存结果、发送通知、清理资源         |
+![img](https://cdn.jsdelivr.net/gh/elihe2011/bedgraph@master/langchain/langchain-middleware-mechanism.png)
 
-这种设计的高明之处在于**"洋葱模型"**——每个`wrap_*`钩子都像一层洋葱皮，请求进去时要剥开层层包装，响应出来时又要再穿回去。这种双向拦截能力，让开发者能完全掌控数据流。
+| Hook 类型       | 风格       | 作用点                 | 说明                              |
+| --------------- | ---------- | ---------------------- | --------------------------------- |
+| before_agent    | Node-style | agent 执行前           | 可用于初始化、日志                |
+| before_model    | Node-style | 模型调用前             | 改 prompt、限速、分析             |
+| wrap_model_call | Wrap-style | 包裹整个模型调用       | 控制重试、缓存、模型替换等        |
+| after_model     | Node-style | 模型调用后             | 结果验证、拦截、跳转              |
+| after_agent     | Node-style | agent 执行后           | 收尾、日志、数据落盘              |
+| wrap_tool_call  | Wrap-style | 包裹工具调用           | 可用于记录参数、异常恢复          |
+| dynamic_prompt  | Wrap-style | 动态生成 system prompt | 实际是 wrap_model_call 的快捷写法 |
+
+
+
+### 7.1.2 风格
+
+**Node-style** (前后插针)：适用于轻量级的 “观察 / 修改 / 插入”，像是提醒、验证、统计。
+
+```python
+def before_model(state, runtime) -> Optional[dict]:
+    ...
+```
+
+
+
+**Wrap-style** (整个包起来)：类似中间件函数，把整个过程包住，有机会 **拦截、替代、重试**。
+
+```python
+def wrap_model_call(request, handler) -> ModelResponse:
+    try:
+        return handler(request)  # 调用原始模型
+    except:
+        return ModelResponse(...)  # 替代或终止
+```
 
 
 
@@ -3694,6 +3756,845 @@ agent = create_agent(
     context_schema=UserContext,
 )
 ```
+
+
+
+# 9. 内置中间件
+
+## 9.1 `SummarizationMiddleware`
+
+### 9.1.1 简介
+
+Agent 在与工作以及大模型的交互过程中会产生大量的对话记录，那这些对话记录的话不可能全部都保存起来，因为可能导致：
+
+- ❌ 超出模型 token 上限（比如 GPT-4o 的 128k）
+- ❌ 上下文越来越混乱，模型“找不到重点”
+- ❌ 成本飙升
+
+
+
+所以这个时候，这个中间件自动帮你处理：
+
+- 检测是否**超过 token 阈值**（比如 4000）
+- 把历史消息进行**摘要压缩**
+- 保留最新若干条消息（比如 20 条）
+- 让模型“继续记得发生了什么”，但**只用更少的 token 表达**
+
+
+
+当对话上下文的长度超过设定的阈值时，中间件会自动将**较早的对话历史**交给大模型进行摘要生成。
+
+随后，它会将这条**摘要消息**、**最近一轮的完整对话**（即上一轮的 Human + AI message）、以及**当前用户的新问题**共同组成新的上下文，重新交由模型进行回复。
+
+这种机制的好处在于：
+
+- ✅ 一方面，保留了上一轮的上下文信息，确保连续对话不会“断片”；
+- ✅ 另一方面，又能有效控制上下文长度，避免 token 溢出或成本增加。
+
+
+
+### 9.1.2 参数
+
+| 参数                      | 作用                     | 默认值                              |
+| ------------------------- | ------------------------ | ----------------------------------- |
+| model                     | 用来生成摘要的 LLM       | ✅ 必填                              |
+| max_tokens_before_summary | 触发摘要的 token 阈值    | ❌（强烈建议设置）                   |
+| messages_to_keep          | 摘要后保留多少条原始消息 | 默认 20                             |
+| summary_prompt            | 自定义摘要指令           | 可选（内置有默认）                  |
+| token_counter             | 自定义 token 计算函数    | 默认用字符长度估算                  |
+| summary_prefix            | 摘要插入对话的前缀文本   | "## Previous conversation summary:" |
+
+
+
+### 9.1.3 示例
+
+```python
+summarize = SummarizationMiddleware(
+    model=llm,
+    max_tokens_before_summary=1000,
+    messages_to_keep=3,
+    summary_prefix="📌摘要：",
+    token_counter=lambda messages: sum(len(m.content) for m in messages if hasattr(m, "content"))
+)
+```
+
+
+
+## 9.2 `HumanInTheLoopMiddleware`
+
+### 9.2.1 简介
+
+在很多场景下，假如直接让大模型自己完成所有工作是很难的。这里最主要的原因就是大模型本质上就是一个黑盒模型，会存在幻觉的问题，很可能会做出一些人类无法理解的操作。
+
+当在一些安全敏感的操作，比如修改数据库、发送邮件、调用金融接口等，直接让其修改的话可能会导致信息混乱的情况发生。因此在大模型调用某些特殊工具以前，先让人类进行审核还是非常有必要的。这也是 **`HumanInTheLoopMiddleware`** 这个中间键存在的重要原因。
+
+该中间键其实就是让 agent 在执行工具调用 **之前先暂停**，等待人工“批准 / 编辑 / 拒绝”。但有个点需要注意的是，这个必须要设置记忆 checkpointer，否则中断状态无法持久化。
+
+
+
+### 9.2.2 参数
+
+| 参数名             | 类型       | 说明                                                       |
+| ------------------ | ---------- | ---------------------------------------------------------- |
+| interrupt_on       | dict       | 哪些工具需要中断确认？可以设为 True/False 或提供更细的配置 |
+| allowed_decisions  | list[str]  | 支持的选择操作：approve / edit / reject                    |
+| description        | str 或函数 | 人类审阅时看到的操作描述                                   |
+| description_prefix | str        | 默认前缀：Tool execution requires approval                 |
+
+
+
+### 9.2.3 示例
+
+```python
+middleware = HumanInTheLoopMiddleware(
+    interrupt_on={
+        "arxiv": {
+            "allowed_decisions": ["approve", "edit", "reject"],
+            "description": "请确认是否调用 arXiv 工具查询论文。",
+        }
+    },
+    description_prefix="🚦 工具调用正在等待人工批准"
+)
+
+✅ 构建 Agent
+agent = create_agent(
+    model=llm,
+    tools=tools,
+    system_prompt="You are a helpful assistant",
+    middleware=[middleware],
+    checkpointer=InMemorySaver()
+)
+
+result = agent.invoke({"messages": [{"role": "user", "content": "请使用 arxiv 工具查询论文编号 1605.08386"}]}, config={"configurable": {"thread_id": "user_1"}})
+print(result)
+```
+
+
+
+**approve 同意**:
+
+```python
+# 检查是否触发中断
+if "__interrupt__" in result:
+    print("🟠 中断已触发，人工审核中...")
+    
+    # ✅ 打印 description 信息
+    for interrupt in result1["__interrupt__"]:
+        for req in interrupt.value["action_requests"]:
+            print(f"\n📝 中断说明：{req.get('description', '无描述信息')}")
+            
+    decisions = input("请输入您的决定（approve/edit/reject）：").strip().lower()
+    
+    # 使用 APPROVE 批准调用
+    result_approve = agent.invoke(
+        Command(
+            resume={"decisions": [{"type": decisions}]}
+        ),
+        config={"configurable": {"thread_id": "user_1"}}
+    )
+    
+    # 打印回复内容
+    print("🟢 批准后模型回复：")
+    print(result_approve["messages"][-1].content)
+```
+
+
+
+**reject 拒绝**:
+
+```python
+# 检查是否触发中断
+if "__interrupt__" in result:
+    print("🟠 中断已触发，人工审核中...")
+
+    # 🗣 显示触发中断的用户提问
+    user_msg = next((m.content for m in result1["messages"] if m.type == "human"), "无")
+    print(f"\n🧑 用户问题：{user_msg}")
+
+    # 🔍 打印中断详情
+    for interrupt in result1["__interrupt__"]:
+        for i, req in enumerate(interrupt.value["action_requests"]):
+            print(f"\n🔧 工具：{req['name']}")
+            print(f"📦 参数：{req['args']}")
+            print(f"📝 描述：{req.get('description', '无')}")
+            print(f"✅ 可选操作：{interrupt.value['review_configs'][i]['allowed_decisions']}")
+    
+    # 👤 人工决定
+    decisions = input("请输入您的决定（approve/edit/reject）：").strip().lower()
+    if decisions notin ["approve", "edit", "reject"]:
+        print("⚠️ 无效的决定，默认选择 reject。")
+        decisions = "reject"
+
+    if decisions == "reject":
+        reject_message = input("请提供拒绝的理由：")<br/>
+    
+    # 🚦 发送人工决策结果
+    result = agent.invoke(
+        Command(
+            resume={
+                "decisions": [
+                    {
+                        "type": decisions,
+                        "message": reject_message if decisions == "reject"elseNone
+                    }
+                ]
+            }
+        ),
+        config={"configurable": {"thread_id": "user_1"}}
+    )
+
+    # 📤 显示模型后续回复
+    print("\n🟢 模型后续回复：")
+    print(result["messages"][-1].content)
+```
+
+
+
+**edit 编辑**:
+
+```python
+if "__interrupt__" in result:
+    print("🟠 中断已触发，人工审核中...")
+
+    # 🗣 显示触发中断的用户提问
+    user_msg = next((m.content for m in result1["messages"] if m.type == "human"), "无")
+    print(f"\n🧑 用户问题：{user_msg}")
+
+    # 🔍 打印中断详情
+    for interrupt in result1["__interrupt__"]:
+        for i, req in enumerate(interrupt.value["action_requests"]):
+            print(f"\n🔧 工具：{req['name']}")
+            print(f"📦 参数：{req['args']}")
+            print(f"📝 描述：{req.get('description', '无')}")
+            print(f"✅ 可选操作：{interrupt.value['review_configs'][i]['allowed_decisions']}")
+
+    # 👤 人工决定
+    decisions = input("请输入您的决定（approve/edit/reject）：").strip().lower()
+    if decisions notin ["approve", "edit", "reject"]:
+        print("⚠️ 无效的决定，默认选择 reject。")
+        decisions = "reject"
+
+    if decisions == "reject":
+        reject_message = input("请提供拒绝的理由：")
+    elif decisions == "edit":
+        query = input("请输入正确的查询命令（query）：")<br/>
+    
+    # 🚦 发送人工决策结果
+    result = agent.invoke(
+        Command(
+            resume={
+                "decisions": [
+                    {
+                        "type": decisions,
+                        "edited_action" : {
+                            "name": "arxiv",               # 工具名，通常保持不变
+                            "args": {"query": query}  # 修改后的参数
+                        }
+                    }
+                ]
+            }
+        ),
+        config={"configurable": {"thread_id": "user_1"}}
+    )
+
+    # 📤 显示模型后续回复
+    print("\n🟢 模型后续回复：")
+    print(result["messages"][-1].content)
+```
+
+
+
+**组合三个方法**:
+
+```python
+if "__interrupt__" in result:
+    print("🟠 中断已触发，人工审核中...")
+
+    # 🗣 提取并显示用户提问内容
+    user_msg = next((m.content for m in result1["messages"] if m.type == "human"), "无")
+    print(f"\n🧑 用户提问：{user_msg}")
+
+    # 🔍 遍历中断详情，展示工具调用信息
+    for interrupt in result1["__interrupt__"]:
+        for i, req in enumerate(interrupt.value["action_requests"]):
+            print(f"\n🔧 工具名：{req['name']}")
+            print(f"📦 参数：{req['args']}")
+            print(f"📝 描述：{req.get('description', '无')}")
+            print(f"✅ 可选操作：{interrupt.value['review_configs'][i]['allowed_decisions']}")
+
+    # 👤 人工输入决策类型
+    decision_type = input("\n请输入您的决定（approve / edit / reject）：").strip().lower()
+    if decision_type notin ["approve", "edit", "reject"]:
+        print("⚠️ 无效输入，默认设置为 reject。")
+        decision_type = "reject"<br/>
+    
+    # 🧩 构造决策对象
+    decision_payload = {"type": decision_type}
+
+    # 若是 edit，询问新的参数
+    if decision_type == "edit":
+        new_query = input("请输入新的论文编号（query）：")
+        decision_payload["edited_action"] = {
+            "name": "arxiv",
+            "args": {"query": new_query}
+        }
+
+    # 若是 reject，提供反馈信息
+    elif decision_type == "reject":
+        decision_payload["message"] = input("请输入拒绝理由：")<br/>
+    
+    # 🚀 发送人工决策结果
+    result2 = agent.invoke(
+        Command(resume={"decisions": [decision_payload]}),
+        config={"configurable": {"thread_id": "user_1"}}
+    )
+<br/>    # 📤 展示最终回复
+    print("\n🟢 模型后续回复：")
+    print(result2["messages"][-1].content)
+```
+
+
+
+## 9.3 `ModelCallLimitMiddleware`
+
+### 9.3.1 简介
+
+在 **ReAct-style agent** 中，如果 LLM 的输出不够理性，可能会进入：输入→ 模型思考 → 工具调用 → 模型思考 → 工具调用 → 模型思考... 这种循环，轻则多花钱，重则“跑爆上下文”。
+
+用途：**模型调用次数限制**
+
+
+
+### 9.3.2 参数
+
+| 参数名        | 类型 | 默认值 | 说明                                                         |
+| ------------- | ---- | ------ | ------------------------------------------------------------ |
+| thread_limit  | int  | None   | 同一会话线程中的最大模型调用次数（例如持续会话）             |
+| run_limit     | int  | None   | 单次执行循环的最大模型调用次数（例如单次 invoke）            |
+| exit_behavior | str  | "end"  | 达到限制后的处理方式：<br/>- "end"：优雅结束并返回提示<br/>- "error"：直接抛出异常停止运行 |
+
+
+
+### 9.3.3 示例
+
+```python
+agent = create_agent(
+    model=llm,
+    tools=load_tools(["arxiv"]),
+    system_prompt="You are a helpful assistant",
+    checkpointer=MemorySaver(),
+    middleware=[
+        ModelCallLimitMiddleware(
+            thread_limit=10,
+            run_limit=3,
+        )
+    ]
+)
+```
+
+
+
+## 9.4 `ToolCallLimitMiddleware`
+
+### 9.4.1 简介
+
+在实际智能体（Agent）执行循环中，**工具调用**（Tool Calls）往往是最昂贵或最不确定的环节：
+
+- 有的工具访问外部 API（比如搜索、数据库查询）；
+- 有的工具运行时间长（比如爬虫、OCR、代码执行）；
+- 如果模型逻辑出错，可能疯狂调用工具，导致**成本暴涨或资源占满**。
+
+LangChain 提供了 `ToolCallLimitMiddleware` ，通过设置调用次数上限，防止 Agent 过度调用工具或陷入无穷循环。
+
+
+
+### 9.4.2 参数
+
+| 参数名        | 类型 | 默认值 | 说明                                                         |
+| ------------- | ---- | ------ | ------------------------------------------------------------ |
+| tool_name     | str  | None   | 限制目标工具名，不填则作用于所有工具                         |
+| thread_limit  | int  | None   | 当前对话线程中（跨多轮）工具调用总上限                       |
+| run_limit     | int  | None   | 单次执行内（一次 .invoke()）的调用上限                       |
+| exit_behavior | str  | "end"  | 达到上限后的处理方式：1. "end" → 优雅结束2. "error" → 抛出异常停止执行 |
+
+
+
+### 9.4.3 示例
+
+```python
+# 限制全局工具调用
+global_limiter = ToolCallLimitMiddleware(thread_limit=20, run_limit=10)
+
+# 单独限制某个工具
+search_limit = ToolCallLimitMiddleware(
+    tool_name="search_web",  # 工具名
+    run_limit=3,             # 单轮执行最多调用 3 次
+    thread_limit=10,         # 整个会话最多调用 5 次
+    exit_behavior="end",      # 达到上限后终止 agent
+)
+
+translate_limit = ToolCallLimitMiddleware(
+    tool_name="translate",
+    run_limit=2
+)
+
+summarize_limit = ToolCallLimitMiddleware(
+    tool_name="summarize",
+    run_limit=1,
+    exit_behavior="error"# 超出时报错
+)
+```
+
+
+
+## 9.5 `ModelFallbackMiddleware`
+
+### 9.5.1 简介
+
+在实际部署智能体（Agent）时，经常会遇到这些情况：
+
+- 主模型暂时不可用或返回错误；
+- 模型超时、API 限额、或延迟太高；
+- 想节省成本，用小模型在轻任务中“兜底”。
+
+LangChain 官方提供了一个内置的中间键 `ModelFallbackMiddleware` ，在主模型失败时自动切换备用模型，保持任务不中断。
+
+
+
+### 9.5.2 参数
+
+| 参数名             | 类型                | 说明           |
+| ------------------ | ------------------- | -------------- |
+| first_model        | str / BaseChatModel | 第一个备用模型 |
+| *additional_models | str / BaseChatModel | 后续备用模型   |
+
+
+
+### 9.5.3 示例
+
+```python
+agent = create_agent(
+    model="openai:gpt-4o",  # 主模型
+    tools=[...],
+    middleware=[
+        ModelFallbackMiddleware(
+            ChatOpenAI(model="gpt-4o-mini", temperature=0.5),
+            ChatOpenAI(model="gpt-3.5-turbo", temperature=0.3),
+            ChatTongyi(model="qwen-max")
+        )
+    ]
+)
+```
+
+
+
+## 9.6 `PIIMiddleware`
+
+### 9.6.1 简介
+
+在很多实际的应用场景里，比如企业、教育或医疗等场景中，**AI 模型输入/输出中往往包含个人隐私信息（PII）**，例如：姓名、手机号、邮箱、身份证号、银行卡号、API Key 等。
+
+这些信息不希望输入给模型或者模型输出出来的。LangChain 提供了一个中间键 `PIIMiddleware` ，其能够通过正则表达式检测的方式，**在模型调用前后自动检测并处理敏感信息**，从而确保系统在生成、存储、展示时都符合法律与合规要求（如 GDPR、个人信息保护法等）。
+
+
+
+### 9.6.2 参数
+
+那我们可以看看这个中间键的主要参数：
+
+| 参数名   | 类型 | 默认值   | 说明                             |
+| -------- | ---- | -------- | -------------------------------- |
+| pii_type | str  | 必填     | 要检测的隐私类型（内置或自定义） |
+| strategy | str  | "redact" | 检测后采取的策略：<br/> - "block" → 直接报错阻止<br/> - "redact" → 替换为 [REDACTED_TYPE]<br/> - "mask" → 局部遮盖，如 ****1234<br/> - "hash" → 转换为哈希字符串 | 
+| detector | str/regex/function | None | 自定义检测规则（正则或函数） |
+| apply_to_input | bool | True | 是否在模型调用前检查输入 | 
+| apply_to_output | bool | False | 是否在模型输出后检查响应 | 
+| apply_to_tool_results | bool | False | 是否在工具结果中检查 |
+
+
+
+**`pii_type` 参数**
+
+| 内置类型名    | 检测目标                          | 示例                                                         |
+| ------------- | --------------------------------- | ------------------------------------------------------------ |
+| "email"       | 邮箱地址                          | alice@example.com                                            |
+| "credit_card" | 信用卡/银行卡号（支持 Luhn 校验） | 4111-1111-1111-1111                                          |
+| "ip"          | IPv4 或 IPv6 地址                 | 192.168.1.12                                                 |
+| "mac_address" | 设备 MAC 地址                     | 00:1A:2B:3C:4D:5E                                            |
+| "url"         | 含 http(s) 或裸域名的网址         | [https://openai.com](https://link.zhihu.com/?target=https%3A//openai.com) |
+
+
+
+**`strategy` 参数**
+
+| 策略     | 处理后输出                                                   | 效果说明                                   |
+| -------- | ------------------------------------------------------------ | ------------------------------------------ |
+| "block"  | ❌ 报错：Detected PII (email) — Request blocked               | 直接抛出 PIIDetectionError，Agent 停止运行 |
+| "redact" | My email is [REDACTED_EMAIL] and my card is [REDACTED_CREDIT_CARD]. | 敏感数据完全替换为标签，模型还能读懂语义   |
+| "mask"   | My email is a****@example.com and my card is --****-5678.    | 部分隐藏，用户仍可识别部分信息             |
+| "hash"   | My email is <email_hash:9f37a21b> and my card is <credit_card_hash:bd93f2f1>. | 转换为哈希值，可用于统计去重，但不能反查   |
+
+
+
+**传入位置详解**
+
+| 参数                  | 触发时机       | 作用对象                      | Hook位置     |
+| --------------------- | -------------- | ----------------------------- | ------------ |
+| apply_to_input        | 模型调用前     | 用户输入（HumanMessage）      | before_model |
+| apply_to_output       | 模型调用后     | 模型生成的输出（AIMessage）   | after_model  |
+| apply_to_tool_results | 工具调用返回后 | 工具返回的结果（ToolMessage） | before_model |
+
+
+
+### 9.6.3 示例
+
+```python
+pii_phone = PIIMiddleware(
+    "phone",                               # 自定义名字，可随意
+    detector=r"\b1[3-9]\d{9}\b",           # 正则表达式（匹配中国手机号）
+    strategy="mask",                       # 处理策略
+    apply_to_input=True                    # 检查输入
+)
+```
+
+
+
+## 9.7 `LLMToolSelectorMiddleware`
+
+### 9.7.1 简介
+
+当一个 Agent 拥有很多工具（10 个以上）时，模型每次推理都需要在所有工具说明之间“思考”，这样不仅浪费 token，还容易选错。
+
+ `LLMToolSelectorMiddleware` 的作用就是在主模型调用前，让一个**小模型**（或更快的模型）先分析用户意图 → 从众多工具中选出相关的几个。
+
+最终，Agent 的系统提示中只保留这些“相关工具”的定义，从而实现 **更快、更准、更省钱** 的调用。这在一定程度上也算是 Context Engineering （上下文工程）的实践。
+
+
+
+### 9.7.2 参数
+
+| 参数名         | 类型      | 默认值        | 说明                                         |
+| -------------- | --------- | ------------- | -------------------------------------------- |
+| model          | str       | BaseChatModel | 无                                           |
+| system_prompt  | str       | 内置模板      | 可以自定义提示，控制工具筛选逻辑             |
+| max_tools      | int       | 无限制        | 限定最多保留的工具数量                       |
+| always_include | list[str] | 空            | 指定永远包含的工具名（比如 search、logging） |
+
+
+
+### 9.7.3 示例
+
+```python
+agent = create_agent(
+    model=ChatTongyi(model="qwen-max"),  # 主模型
+    tools=[weather_tool, search_tool, math_tool, email_tool],
+    middleware=[
+        LLMToolSelectorMiddleware(
+            model=ChatTongyi(model="qwen-turbo"),  # ✅ 选择辅助模型用于筛选
+            max_tools=2,                 # 最多保留 2 个
+            always_include=["search"],   # 某些关键工具始终保留
+        ),
+    ],
+)
+```
+
+
+
+## 9.8 `ToolRetryMiddleware `
+
+### 9.8.1 简介
+
+在工具调用的过程中，常常还会遇到一些外部的问题，比如网络连接失败、数据库连接失败、模型执行有问题等等。那在工具调用（Tool call）失败时，如何让 Agent 不会立即崩溃或返回错误，这就成了急切需要解决的问题。
+
+所以这个时候，`ToolRetryMiddleware` 就给出了一个方案，不仅仅可以在调用工具的时候重复多次，还能够设置延时、指数回退（exponential backoff）、随机扰动（jitter）等机制。从而让智能体在调用 **不稳定外部服务**（例如网络请求、搜索接口、数据库API）时更加鲁棒（robust）。
+
+
+
+### 9.8.2 参数
+
+| 参数名         | 类型                                  | 默认值           | 说明                               |
+| -------------- | ------------------------------------- | ---------------- | ---------------------------------- |
+| max_retries    | int                                   | 2                | 最大重试次数（不含初次调用）       |
+| tools          | list[str\|BaseTool]                   | None             | 工具列表                           |
+| retry_on       | tuple[type[Exception]] 或 callable    | (Exception,)     | 指定哪些异常会触发重试             |
+| on_failure     | "return_message" / "raise" / callable | "return_message" | 所有重试失败后的处理方式           |
+| backoff_factor | float                                 | 2.0              | 每次重试等待时间乘倍数（指数退避） |
+| initial_delay  | float                                 | 1.0              | 初始延迟秒数                       |
+| max_delay      | float                                 | 60.0             | 最大等待间隔                       |
+| jitter         | bool                                  | True             | 是否添加 ±25% 随机扰动避免同时重试 |
+
+
+
+**`retry_on` 参数**
+
+其类型要求的格式是传入一个元组 `tuple[type[Exception], ...]`，或者是一个 Callable 的列表 `Callable[[Exception], bool]` 。默认情况下，是遇到任何异常都进行尝试 `(Exception,)` 。
+
+指定类型的异常，适合在网络超时、连接错误时重试：
+
+```python3
+from requests.exceptions import Timeout, ConnectionError
+
+ToolRetryMiddleware(retry_on=(Timeout, ConnectionError))
+```
+
+
+
+自定义判断函数（作为 runnable 对象）来传入，仅对服务端 5xx 错误重试，不对 4xx 客户端错误重试：
+
+```python3
+def retry_on_server_error(exc: Exception) -> bool:
+    return hasattr(exc, "status_code") and 500 <= exc.status_code < 600
+
+ToolRetryMiddleware(retry_on=retry_on_server_error)
+```
+
+
+
+**`on_failure` 参数**
+
+在工具调用出错以后，并且所有重试失败之后要做的事情。那在参数中给出了三种可能 `"return_message"` | `"raise"` | `Callable[[Exception], str]` 。
+
+默认是 `"return_message"` ，就是把错误信息当做工具返回的结果 Observation 返回给到模型，让模型知道这个工具没办法调用。也就是说 返回的内容会被包装成一个 `ToolMessage`：
+
+```text
+return ToolMessage(
+    content=content,
+    tool_call_id=tool_call_id,
+    name=tool_name,
+    status="error",
+)
+```
+
+如果选择了 `"raise"` 的话，那就是直接抛出异常终止 Agent 了。这种一般适用于高风险操作（如转账、删除文件）等操作。
+
+最后的 callable 其实就是自己去定义报错后返回的信息。然后再把这部分信息作为 `ToolMessage` 里的 `content` （和前面 `"return_message"` 类似）返回给模型。
+
+```python3
+def format_error(e: Exception) -> str:
+    return "数据库暂时不可用，请稍后重试。"
+
+ToolRetryMiddleware(
+    max_retries=3,
+    on_failure=format_error
+)
+
+ToolMessage(
+    content="数据库暂时不可用，请稍后重试。",
+    name="search_database",
+    tool_call_id="tool_call_123",
+    status="error",
+)
+```
+
+
+
+**`initial_delay` & `backoff_factor` & `max_delay` 参数**
+
+- `initial_delay` 首次重试前的等待秒数，默认等待 1 秒。
+- `backoff_factor` 指数退避倍数。每次重试间隔时间按倍数增长，默认是两倍。默认情况下，第一次失败后会等 1s，第二次等 2s，第三次等 4s 。假如 `backoff_factor` 等于 0 的话，恒定按照 `initial_delay` 的时间进行重置。
+
+- `max_delay` 最大等待时间上限，防止指数退避过长。默认 60s
+
+
+
+**`jitter` 参数**
+
+`jitter`（一般叫“随机抖动”或“随机扰动”）在分布式系统和中间件里是一个非常经典的概念，在 `ToolRetryMiddleware` 中主要用于**“随机化每次重试的等待时间”**，防止所有 Agent 在同一时间点同时发起重试请求，从而造成“雪崩”。
+
+比如默认情况开启就会设置 jitter 为 25%，那假如等待时间是 4 秒的话，那实际的等待时间可能在 3.0 秒到 5.0 秒之间浮动。
+
+假设有 100 个智能体（Agent），它们都在调用同一个外部接口。如果这个接口临时宕机了，那么所有智能体都同时报错。这样会导致 **“流量雪崩”（thundering herd）**——外部接口刚恢复，又瞬间被几百个 agent 同时打爆。
+
+假如我们加上了 gitter 的话就会变成：
+
+```text
+第 1 次失败：每个 agent 在 1s ± 0.25s 随机重试
+第 2 次失败：每个 agent 在 2s ± 0.5s 随机重试
+第 3 次失败：每个 agent 在 4s ± 1s 随机重试
+```
+
+这样不同 agent 的重试时刻被分散开，整个系统的请求量更平滑，恢复更快，也不容易触发限流。所以在实际生产的过程中还是非常实用的，当然假如是自己本地测试那开不开都无所谓。
+
+
+
+### 9.8.3 示例
+
+```python
+agent = create_agent(
+    model=ChatTongyi(model="qwen-max"),
+    tools=[search_tool, database_tool],
+    middleware=[
+        ToolRetryMiddleware(
+            max_retries=3,       # 最多重试 3 次
+            backoff_factor=2.0,  # 指数退避倍数
+            initial_delay=1.0,   # 首次延迟 1 秒
+            max_delay=60.0,      # 最大等待时间 60 秒
+            jitter=True,         # 添加随机扰动，防止雪崩重试
+        ),
+    ],
+)
+```
+
+执行逻辑：
+
+```
+┌────────────────────────────┐
+│  wrap_tool_call(request)   │
+└─────────────┬──────────────┘
+              ▼
+        ┌─────────────┐
+        │ try handler │
+        └──────┬──────┘
+               │ success
+               ▼
+        Tool 执行成功 ✅
+               │
+               └──→ 返回结果
+               │
+        ❌ 失败（异常）
+               ▼
+        进入重试逻辑（延时+计数）
+               ▼
+        超过 max_retries？
+         ├─ 否 → 继续 retry
+         └─ 是 → 触发 on_failure
+```
+
+
+
+## 9.9 `LLMToolEmulator `
+
+### 9.9.1 简介
+
+在还没有实现具体的工具逻辑的时候，但是这个工具又非常重要的时候，可以通过用 LLM 来**模拟工具的执行结果**（tool emulation）。这样就可以让整体流程先顺利进行，后面再补充相对应的逻辑。
+
+
+
+### 9.9.2 参数
+
+| 参数名 | 类型              | 默认值 | 作用说明 |
+| ------ | ----------------- | ------ | -------- |
+| tools  | list[strBaseTool] | None   | None     |
+
+
+
+### 9.9.3 示例
+
+```python
+agent = create_agent(
+    model=ChatTongyi(model="qwen-max"),
+    tools=[get_weather, search_database, send_email],
+    middleware=[
+        LLMToolEmulator(
+            model = ChatTongyi(model="qwen-turbo")
+        ),  # 所有工具调用都由 LLM 模拟执行
+    ],
+)
+
+agent = create_agent(
+    model=ChatTongyi(model="qwen-max"),
+    tools=[get_weather, search_database, send_email],
+    middleware=[
+        LLMToolEmulator(
+            tools = []
+            model = ChatTongyi(model="qwen-turbo")
+        ),  # 关闭工具调用都由 LLM 模拟执行
+    ],
+)
+
+agent = create_agent(
+    model=ChatTongyi(model="qwen-max"),
+    tools=[get_weather, search_database, send_email],
+    middleware=[
+        LLMToolEmulator(
+            tools = [get_weather]
+            model = ChatTongyi(model="qwen-turbo")
+        ),  # 工具 get_weather 调用由 LLM 模拟执行
+    ],
+)
+```
+
+
+
+## 9.10 `ContextEditingMiddleware`
+
+### 9.10.1 简介
+
+对于长时间运作的 Agent 而言，其上下文可能会非常长。过长的上下文不仅会导致成本的暴增，并且也可能会让大模型产生严重的幻觉问题。因此 LangChain 的 `ContextEditingMiddleware` 是一种 **“上下文清理器”**，当对话变得太长（token 多、工具历史太多）时，自动触发对上下文的“编辑（editing）”操作。
+
+这些操作包括：
+
+- 清除旧的工具调用记录；
+- 删除失败的 tool 结果；
+- 替换过期内容为占位符；
+- 自定义保留/清理策略。
+
+
+
+### 9.10.2 参数
+
+| 参数名             | 类型                    | 默认值                | 作用                                                         | 什么时候调                                         |
+| ------------------ | ----------------------- | --------------------- | ------------------------------------------------------------ | -------------------------------------------------- |
+| edits              | Iterable[ContextEdit]   | [ClearToolUsesEdit()] | 要执行的上下文编辑策略列表（可以包含多个策略，按顺序依次执行） | 想自定义清理规则、保留哪些消息、如何裁剪时修改     |
+| token_count_method | "approximate" / "model" | "approximate"         | 用什么方式计算当前对话 token 数：近似计数还是模型精确计数    | 生产高严谨度 → "model"；调试高性能 → "approximate" |
+
+
+
+内置的 ClearToolUsesEdit 中又有一些具体的清理策略参数：
+
+| 参数名            | 类型          | 默认值      | 作用                                               | 常见用法                                             |
+| ----------------- | ------------- | ----------- | -------------------------------------------------- | ---------------------------------------------------- |
+| trigger           | int           | 100_000     | 当上下文 token 数超过这个阈值时才触发清理          | 把它设成你的“别再胖下去”的拐点，比如 4000、8000      |
+| clear_at_least    | int           | 0           | 每次运行时至少要回收多少 token，达到这个后就可以停 | 想控制“清多少就够”，比如至少释放 1000 tokens         |
+| keep              | int           | 3           | 永远保留最近 N 次工具结果，不动它们                | 防止把刚刚用过的工具结果清掉                         |
+| clear_tool_inputs | bool          | False       | 除了清理工具输出，还要不要把工具的入参也清掉       | 处理含隐私/敏感参数的场景时设为 True                 |
+| exclude_tools     | Sequence[str] | ()          | 哪些工具的结果绝对不能清理                         | 权限校验、用户信息、合规模块的输出                   |
+| placeholder       | str           | "[cleared]" | 被清理的 ToolMessage 会用这个占位文本替代内容      | 可自定义更友好的人类可读文案，比如"[历史记录已清除]" |
+
+所以在默认的情况下，只有超过 10w 的 token 后，才会开始触发清理的任务。
+
+
+
+### 9.10.3 示例
+
+```python
+# 定期清理掉一些工具调用的旧信息
+ContextEditingMiddleware(
+    edits=[
+        ClearToolUsesEdit(
+            trigger=2000,   # 超过2000token清理
+            keep=2,         # 保留最近2次
+            placeholder="[旧结果已清理]"
+        )
+    ]
+)
+
+# 排除特定工具的信息清理
+ContextEditingMiddleware(
+    edits=[
+        ClearToolUsesEdit(
+            exclude_tools=["summarize", "search"],  # 不清理这些
+            clear_tool_inputs=True
+        )
+    ]
+)
+```
+
+
+
+## 9.11 `xxx`
+
+### 9.11.1 简介
+
+
+
+### 9.11.2 参数
+
+
+
+### 9.11.3 示例
+
+
 
 
 
