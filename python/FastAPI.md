@@ -4,16 +4,16 @@
 
 ```python
 # core/response.py
-from pydantic.generics import GenericModel
-from typing import Generic, TypeVar, Optional
+from pydantic.generics import GenericModel
+from typing import Generic, TypeVar, Optional
 
 T = TypeVar("T")
 
 # 定义通用响应模型（支持泛型）
-class Response(GenericModel, Generic[T]):
-    code: int = 0
-    message: str = "success"
-    data: Optional[T] = None
+class Response(GenericModel, Generic[T]):
+    code: int = 0
+    message: str = "success"
+    data: Optional[T] = None
 ```
 
 
@@ -65,11 +65,11 @@ register_exceptions(app)
 
 # 异常处理
 @app.get("/users/{user_id}", response_model=Response[UserOut])
-async def get_user(user_id: int):
-    user = await User.get_or_none(id=user_id)
-    if not user:
-        raise BusinessException(code=4040, message="用户不存在")
-    return Response(data=user)
+async def get_user(user_id: int):
+    user = await User.get_or_none(id=user_id)
+    if not user:
+        raise BusinessException(code=4040, message="用户不存在")
+    return Response(data=user)
 ```
 
 
@@ -82,11 +82,11 @@ async def get_user(user_id: int):
 
 ```python
 # database.py
-from tortoise.transactions import in_transaction
+from tortoise.transactions import in_transaction
 
-async def get_db():
-    async with in_transaction() as connection:
-        yield connection
+async def get_db():
+    async with in_transaction() as connection:
+        yield connection
 ```
 
 
@@ -95,14 +95,14 @@ async def get_db():
 
 ```python
 # api/user.py
-from fastapi import APIRouter, Depends
-from database import get_db
+from fastapi import APIRouter, Depends
+from database import get_db
 
 router = APIRouter()
 
 @router.get("/users")
-async def get_users(db=Depends(get_db)):
-    return await db.execute_query_dict("SELECT * FROM user")
+async def get_users(db=Depends(get_db)):
+    return await db.execute_query_dict("SELECT * FROM user")
 ```
 
 🎯 优点：
@@ -119,31 +119,31 @@ async def get_users(db=Depends(get_db)):
 
 ```python
 # auth.py
-from fastapi import Depends, HTTPException
-from fastapi.security import OAuth2PasswordBearer
-from models import User  # 假设你有一个 User 模型
+from fastapi import Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+from models import User  # 假设你有一个 User 模型
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
-def decode_token(token: str):
-    # 实际项目中请用 JWT 解码
-    if token == "admin-token":
-        return {"id": 1, "is_admin": True}
-    elif token == "user-token":
-        return {"id": 2, "is_admin": False}
-    returnNone
+def decode_token(token: str):
+    # 实际项目中请用 JWT 解码
+    if token == "admin-token":
+        return {"id": 1, "is_admin": True}
+    elif token == "user-token":
+        return {"id": 2, "is_admin": False}
+    returnNone
 
-async def verify_token(token: str = Depends(oauth2_scheme)) -> int:
-    user = decode_token(token)
-    ifnot user:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    return user["id"]
+async def verify_token(token: str = Depends(oauth2_scheme)) -> int:
+    user = decode_token(token)
+    ifnot user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return user["id"]
 
-async def admin_required(user_id: int = Depends(verify_token)):
-    user = await User.get(id=user_id)
-    ifnot user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-    return user
+async def admin_required(user_id: int = Depends(verify_token)):
+    user = await User.get(id=user_id)
+    ifnot user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+    return user
 ```
 
 
@@ -170,14 +170,14 @@ async def admin_dashboard(current_user=Depends(admin_required)):
 
 ```python
 # context.py
-from fastapi import Request
+from fastapi import Request
 
-async def get_request_context(request: Request):
-    return {
-        "ip": request.client.host,
-        "user_agent": request.headers.get("user-agent"),
-        "headers": dict(request.headers)
-    }
+async def get_request_context(request: Request):
+    return {
+        "ip": request.client.host,
+        "user_agent": request.headers.get("user-agent"),
+        "headers": dict(request.headers)
+    }
 ```
 
 👨‍💻 使用方式：
@@ -202,23 +202,23 @@ async def log(ctx = Depends(get_request_context)):
 使用依赖注入后，**每一个外部服务（如数据库、权限、上下文）都可以在测试中 mock 掉**，不再依赖真实服务，非常适合 CI/CD 环境。
 
 ```python
-from fastapi.testclient import TestClient
-from main import app
-from database import get_db
+from fastapi.testclient import TestClient
+from main import app
+from database import get_db
 
 # Mock 数据库连接
 async def override_get_db():
-    class DummyDB:
-        async def execute_query_dict(self, sql):
-            return [{"id": 1, "username": "test_user"}]
-    yield DummyDB()
+    class DummyDB:
+        async def execute_query_dict(self, sql):
+            return [{"id": 1, "username": "test_user"}]
+    yield DummyDB()
 
 app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
 
 def test_get_users():
-    response = client.get("/users")
-    assert response.status_code == 200
+    response = client.get("/users")
+    assert response.status_code == 200
 ```
 
 你也可以 override 权限验证、上下文获取等依赖项：
@@ -254,10 +254,10 @@ app.dependency_overrides[verify_token] = lambda: 1
 
 ```python
 # middlewares/request_timer.py
-import time
-from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
-import logging
+import time
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
+import logging
 
 # 设置日志输出
 logger = logging.getLogger("request_logger")
@@ -269,20 +269,20 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 
-class RequestTimerMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        start_time = time.time()
+class RequestTimerMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
 
-        response = await call_next(request)  # 执行请求处理链
+        response = await call_next(request)  # 执行请求处理链
 
-        process_time = time.time() - start_time
-        formatted_time = f"{process_time * 1000:.2f}ms"
+        process_time = time.time() - start_time
+        formatted_time = f"{process_time * 1000:.2f}ms"
 
-        logger.info(f"{request.method} {request.url.path} - 耗时: {formatted_time}")
+        logger.info(f"{request.method} {request.url.path} - 耗时: {formatted_time}")
 
-        # 可以添加到响应头中返回
-        response.headers["X-Process-Time"] = formatted_time
-        return response
+        # 可以添加到响应头中返回
+        response.headers["X-Process-Time"] = formatted_time
+        return response
 ```
 
 
@@ -291,8 +291,8 @@ class RequestTimerMiddleware(BaseHTTPMiddleware):
 
 ```python
 # main.py
-from fastapi import FastAPI
-from middlewares.request_timer import RequestTimerMiddleware
+from fastapi import FastAPI
+from middlewares.request_timer import RequestTimerMiddleware
 
 app = FastAPI()
 
@@ -301,8 +301,8 @@ app.add_middleware(RequestTimerMiddleware)
 
 # 示例路由
 @app.get("/ping")
-async def ping():
-    return {"message": "pong"}
+async def ping():
+    return {"message": "pong"}
 ```
 
 
@@ -318,38 +318,38 @@ from fastapi.responses import JSONResponse
 import logging
 
 logger = logging.getLogger(__name__)
-BLACKLIST = set()  # 从配置文件读取
+BLACKLIST = set()  # 从配置文件读取
 
 @app.middleware("http")
 async def unified_middleware(request: Request, call_next):
-    # 1. IP 黑名单检查
-    client_ip = request.client.host
-    if client_ip in BLACKLIST:
-        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
-    
-    # 2. 开始计时
-    start = time.perf_counter()
-    
-    # 3. 记录请求
-    logger.info(f"[{client_ip}] → {request.method} {request.url.path}")
-    
-    # 4. 执行请求
-    try:
-        response = await call_next(request)
-    except Exception as e:
-        logger.error(f"💥 异常: {e}")
-        raise
-    
-    # 5. 计算耗时
-    elapsed = time.perf_counter() - start
-    
-    # 6. 记录响应
-    logger.info(f"[{client_ip}] ← {response.status_code} | {elapsed:.3f}s")
-    
-    # 7. 添加响应头
-    response.headers["X-Process-Time"] = f"{elapsed:.3f}"
-    
-    return response
+    # 1. IP 黑名单检查
+    client_ip = request.client.host
+    if client_ip in BLACKLIST:
+        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+    
+    # 2. 开始计时
+    start = time.perf_counter()
+    
+    # 3. 记录请求
+    logger.info(f"[{client_ip}] → {request.method} {request.url.path}")
+    
+    # 4. 执行请求
+    try:
+        response = await call_next(request)
+    except Exception as e:
+        logger.error(f"💥 异常: {e}")
+        raise
+    
+    # 5. 计算耗时
+    elapsed = time.perf_counter() - start
+    
+    # 6. 记录响应
+    logger.info(f"[{client_ip}] ← {response.status_code} | {elapsed:.3f}s")
+    
+    # 7. 添加响应头
+    response.headers["X-Process-Time"] = f"{elapsed:.3f}"
+    
+    return response
 ```
 
 
@@ -421,58 +421,58 @@ app.add_middleware(RequestIDMiddleware)
 
 ```python
 # chat_manager.py
-from fastapi import WebSocket
-from typing import Dict
+from fastapi import WebSocket
+from typing import Dict
 
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: Dict[str, WebSocket] = {}
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
 
-    async def connect(self, username: str, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections[username] = websocket
-        await self.broadcast(f"👋 用户【{username}】加入了聊天室")
+    async def connect(self, username: str, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections[username] = websocket
+        await self.broadcast(f"👋 用户【{username}】加入了聊天室")
 
-    def disconnect(self, username: str):
-        if username in self.active_connections:
-            del self.active_connections[username]
+    def disconnect(self, username: str):
+        if username in self.active_connections:
+            del self.active_connections[username]
 
-    async def send_personal_message(self, message: str, to_user: str):
-        if to_user in self.active_connections:
-            await self.active_connections[to_user].send_text(message)
+    async def send_personal_message(self, message: str, to_user: str):
+        if to_user in self.active_connections:
+            await self.active_connections[to_user].send_text(message)
 
-    async def broadcast(self, message: str):
-        for ws in self.active_connections.values():
-            await ws.send_text(message)
+    async def broadcast(self, message: str):
+        for ws in self.active_connections.values():
+            await ws.send_text(message)
 ```
 
 使用：
 
 ```python
 # main.py
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
-from chat_manager import ConnectionManager
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from chat_manager import ConnectionManager
 
 app = FastAPI()
 manager = ConnectionManager()
 
 @app.websocket("/ws/chat/")
-async def websocket_endpoint(websocket: WebSocket, username: str = Query(...)):
-    await manager.connect(username, websocket)
-    try:
-        while True:
-            data = await websocket.receive_json()
-            msg_type = data.get("type", "broadcast")
-            content = data.get("message")
-            to_user = data.get("to")
+async def websocket_endpoint(websocket: WebSocket, username: str = Query(...)):
+    await manager.connect(username, websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            msg_type = data.get("type", "broadcast")
+            content = data.get("message")
+            to_user = data.get("to")
 
-            if msg_type == "private" and to_user:
-                await manager.send_personal_message(f"💌 私信【{username}】→【{to_user}】：{content}", to_user)
-            else:
-                await manager.broadcast(f"💬 【{username}】：{content}")
-    except WebSocketDisconnect:
-        manager.disconnect(username)
-        await manager.broadcast(f"❌ 用户【{username}】离开了聊天室")
+            if msg_type == "private" and to_user:
+                await manager.send_personal_message(f"💌 私信【{username}】→【{to_user}】：{content}", to_user)
+            else:
+                await manager.broadcast(f"💬 【{username}】：{content}")
+    except WebSocketDisconnect:
+        manager.disconnect(username)
+        await manager.broadcast(f"❌ 用户【{username}】离开了聊天室")
 ```
 
 
@@ -480,41 +480,41 @@ async def websocket_endpoint(websocket: WebSocket, username: str = Query(...
 前端示例：
 
 ```html
-<!DOCTYPE html>
+<!DOCTYPE html>
 <html>
 <head><title>聊天</title></head>
 <body>
-  <h2>FastAPI 聊天室</h2>
-  <input id="username" placeholder="用户名" />
-  <button onclick="connect()">连接</button>
+  <h2>FastAPI 聊天室</h2>
+  <input id="username" placeholder="用户名" />
+  <button onclick="connect()">连接</button>
 
-  <div>
-    <input id="to" placeholder="发给谁（留空为群发）" />
-    <input id="message" placeholder="消息内容" />
-    <button onclick="send()">发送</button>
-  </div>
+  <div>
+    <input id="to" placeholder="发给谁（留空为群发）" />
+    <input id="message" placeholder="消息内容" />
+    <button onclick="send()">发送</button>
+  </div>
 
-  <ul id="messages"></ul>
+  <ul id="messages"></ul>
 
-  <script>
-    let ws = null;
-    function connect() {
-      const username = document.getElementById("username").value;
-      ws = new WebSocket("ws://localhost:8000/ws/chat/?username=" + username);
-      ws.onmessage = event => {
-        const li = document.createElement("li");
-        li.innerText = event.data;
-        document.getElementById("messages").appendChild(li);
-      };
-    }
+  <script>
+    let ws = null;
+    function connect() {
+      const username = document.getElementById("username").value;
+      ws = new WebSocket("ws://localhost:8000/ws/chat/?username=" + username);
+      ws.onmessage = event => {
+        const li = document.createElement("li");
+        li.innerText = event.data;
+        document.getElementById("messages").appendChild(li);
+      };
+    }
 
-    function send() {
-      const msg = document.getElementById("message").value;
-      const to = document.getElementById("to").value;
-      const type = to ? "private" : "broadcast";
-      ws.send(JSON.stringify({ type, message: msg, to }));
-    }
-  </script>
+    function send() {
+      const msg = document.getElementById("message").value;
+      const to = document.getElementById("to").value;
+      const type = to ? "private" : "broadcast";
+      ws.send(JSON.stringify({ type, message: msg, to }));
+    }
+  </script>
 </body>
 </html>
 ```
@@ -535,17 +535,17 @@ async def websocket_endpoint(websocket: WebSocket, username: str = Query(...
 **方法一：使用 `@app.on_event()` 装饰器（经典方式）**
 
 ```python
-from fastapi import FastAPI
+from fastapi import FastAPI
 
 app = FastAPI()
 
 @app.on_event("startup")
-async def startup_event():
-    print("应用启动，初始化资源...")
+async def startup_event():
+    print("应用启动，初始化资源...")
 
 @app.on_event("shutdown")
-async def shutdown_event():
-    print("应用关闭，释放资源...")
+async def shutdown_event():
+    print("应用关闭，释放资源...")
 ```
 
 
@@ -553,16 +553,16 @@ async def shutdown_event():
 **方法二：使用 `lifespan()` 上下文函数（推荐方式）**
 
 ```python
-from fastapi import FastAPI
-from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from contextlib import asynccontextmanager
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("✅ 应用启动 - startup")
-    # 初始化资源
-    yield
-    print("🧹 应用关闭 - shutdown")
-    # 清理资源
+async def lifespan(app: FastAPI):
+    print("✅ 应用启动 - startup")
+    # 初始化资源
+    yield
+    print("🧹 应用关闭 - shutdown")
+    # 清理资源
 
 app = FastAPI(lifespan=lifespan)
 ```
@@ -573,17 +573,17 @@ app = FastAPI(lifespan=lifespan)
 
 ```python
 # utils/database.py
-class DBClient:
-    def __init__(self):
-        self.connected = False
+class DBClient:
+    def __init__(self):
+        self.connected = False
 
-    async def connect(self):
-        print("🔌 正在连接数据库...")
-        self.connected = True
+    async def connect(self):
+        print("🔌 正在连接数据库...")
+        self.connected = True
 
-    async def disconnect(self):
-        print("❌ 正在关闭数据库连接...")
-        self.connected = False
+    async def disconnect(self):
+        print("❌ 正在关闭数据库连接...")
+        self.connected = False
 
 db_client = DBClient()
 
@@ -591,36 +591,36 @@ db_client = DBClient()
 # utils/cache.py
 cache = {}
 
-async def preload_cache():
-    print("⚡ 预热缓存中...")
-    cache["hot_data"] = [1, 2, 3, 4]
+async def preload_cache():
+    print("⚡ 预热缓存中...")
+    cache["hot_data"] = [1, 2, 3, 4]
 
-async def clear_cache():
-    print("🧹 清理缓存...")
-    cache.clear()
+async def clear_cache():
+    print("🧹 清理缓存...")
+    cache.clear()
     
 
 # utils/model_loader.py
-model = None
+model = None
 
-async def load_model():
-    global model
-    print("🤖 加载机器学习模型...")
-    model = "MyModel"
+async def load_model():
+    global model
+    print("🤖 加载机器学习模型...")
+    model = "MyModel"
 
-async def unload_model():
-    global model
-    print("🧼 卸载模型...")
-    model = None
+async def unload_model():
+    global model
+    print("🧼 卸载模型...")
+    model = None
     
     
 # main.py
-from fastapi import FastAPI
-from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from contextlib import asynccontextmanager
 
-from utils.database import db_client
-from utils.cache import preload_cache, clear_cache
-from utils.model_loader import load_model, unload_model
+from utils.database import db_client
+from utils.cache import preload_cache, clear_cache
+from utils.model_loader import load_model, unload_model
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -637,8 +637,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
-async def root():
-    return {"message": "Hello, FastAPI 生命周期！"}
+async def root():
+    return {"message": "Hello, FastAPI 生命周期！"}
 ```
 
 
@@ -1750,14 +1750,14 @@ Pydantic 校验错误，FastAPI 默认返回 422 错误响应
 
 ```json
 {
-    "detail": [
-        {
-            "type": "string_too_short",
-            "loc": ["body", "password"],
-            "msg": "String should have at least 8 characters",
-            "input": "abc"
-        }
-    ]
+    "detail": [
+        {
+            "type": "string_too_short",
+            "loc": ["body", "password"],
+            "msg": "String should have at least 8 characters",
+            "input": "abc"
+        }
+    ]
 }
 ```
 
@@ -1792,12 +1792,12 @@ async def request_validation_error_handler(request: Request, exc: RequestValidat
 
 ```json
 {
-    "success": false,
-    "message": "校验失败",
-    "errors": {
-        "password": "String should have at least 8 characters",
-        "email": "value is not a valid email address"
-    }
+    "success": false,
+    "message": "校验失败",
+    "errors": {
+        "password": "String should have at least 8 characters",
+        "email": "value is not a valid email address"
+    }
 }
 ```
 
